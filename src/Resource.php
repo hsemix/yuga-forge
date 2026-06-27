@@ -2,6 +2,9 @@
 
 namespace Yuga\Forge;
 
+use Yuga\Database\Elegant\Association\BelongsTo;
+use Yuga\Database\Elegant\Association\HasOne;
+use Yuga\Database\Elegant\Model;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
@@ -105,8 +108,20 @@ abstract class Resource extends Component
 
     protected function firstSortableColumn(Table $table): ?string
     {
+        $instance = new ($this->model)();
+
         foreach ($table->getColumns() as $column) {
-            if ($column->isSortable()) {
+            if (!$column->isSortable()) {
+                continue;
+            }
+
+            if (!str_contains($column->getName(), '.')) {
+                return $column->getName();
+            }
+
+            [$relation] = explode('.', $column->getName(), 2);
+
+            if ($this->relationJoin($instance, $relation) !== null) {
                 return $column->getName();
             }
         }
@@ -383,12 +398,40 @@ abstract class Resource extends Component
      * calls have no such grouping and would mis-parse against any AND filter
      * added afterwards (SQL's AND binds tighter than OR).
      *
+     * Sort/search columns may be dotted relation paths (e.g. "customer.name").
+     * Those get qualified to the real joined table via relationJoin() — any
+     * LEFT JOINs that turns up get added once, and the select() is pinned to
+     * "$table.*" so the joined columns can constrain WHERE/ORDER BY without
+     * polluting the hydrated model's own attributes (display still goes
+     * through ->with(), which fetches relation data with separate queries).
+     *
      * @return \Yuga\Database\Elegant\Builder
      */
     protected function baseQuery(Table $table)
     {
         $modelClass = $this->model;
-        $query = $modelClass::orderBy($this->sort, $this->direction === 'asc' ? 'asc' : 'desc');
+        $instance = new $modelClass();
+        $joins = [];
+
+        $qualify = function (string $name) use ($instance, &$joins) {
+            if (!str_contains($name, '.')) {
+                return $instance->getTable() . '.' . $name;
+            }
+
+            [$relation, $column] = explode('.', $name, 2);
+
+            if (!array_key_exists($relation, $joins)) {
+                $joins[$relation] = $this->relationJoin($instance, $relation);
+            }
+
+            return $joins[$relation] !== null ? $joins[$relation]['table'] . '.' . $column : null;
+        };
+
+        $sortColumn = $this->sort !== ''
+            ? ($qualify($this->sort) ?? $instance->getTable() . '.' . $instance->getPrimaryKey())
+            : $instance->getTable() . '.' . $instance->getPrimaryKey();
+
+        $query = $modelClass::orderBy($sortColumn, $this->direction === 'asc' ? 'asc' : 'desc');
 
         $search = trim($this->search);
 
@@ -396,6 +439,8 @@ abstract class Resource extends Component
             $searchable = array_values(array_unique(array_merge(
                 ...array_map(fn ($column) => $column->getSearchableColumns(), $table->getColumns())
             )));
+
+            $searchable = array_values(array_filter(array_map($qualify, $searchable)));
 
             if ($searchable !== []) {
                 $like = '%' . $search . '%';
@@ -416,11 +461,82 @@ abstract class Resource extends Component
             }
         }
 
+        $activeJoins = array_filter($joins);
+
+        if ($activeJoins !== []) {
+            $query->select($instance->getTable() . '.*');
+
+            foreach ($activeJoins as $join) {
+                $query->leftJoin($join['table'], $join['on'][0], '=', $join['on'][1]);
+            }
+        }
+
         if ($this->with !== []) {
             $query->with($this->with);
         }
 
         return $query;
+    }
+
+    /**
+     * Resolves a relation method on the model into JOIN metadata: the related
+     * table plus an ON condition, so Resource::baseQuery() can sort/search/
+     * filter across it. Yuga's Association classes (BelongsTo/HasOne/etc.)
+     * don't expose public getters for their foreignKey/otherKey — this reads
+     * the protected properties directly via reflection rather than asking
+     * consumers to redeclare FK details Forge could otherwise read straight
+     * off the real relation definition.
+     *
+     * Only to-one relations are joined: BelongsTo and HasOne. A to-many
+     * relation (HasMany/BelongsToMany) joined into a list of the *parent*
+     * model would duplicate rows (one per related record) — out of scope
+     * here, not a join Forge will ever attempt. Returns null for those, for a
+     * relation method that doesn't exist, or if the model has no such method;
+     * callers then treat anything addressing that relation as not pushable to
+     * SQL (it can still be eager-loaded via $with and shown read-only).
+     *
+     * @return array{table: string, on: array{0: string, 1: string}}|null
+     */
+    protected function relationJoin(Model $instance, string $relation): ?array
+    {
+        if (!method_exists($instance, $relation)) {
+            return null;
+        }
+
+        $association = $instance->$relation();
+
+        if (!$association instanceof BelongsTo && !$association instanceof HasOne) {
+            return null;
+        }
+
+        $reflection = new \ReflectionObject($association);
+        $read = fn (string $property) => (function () use ($reflection, $association, $property) {
+            $prop = $reflection->getProperty($property);
+            $prop->setAccessible(true);
+
+            return $prop->getValue($association);
+        })();
+
+        $foreignKey = $read('foreignKey');
+        $otherKey = $read('otherKey');
+        $related = $read('child');
+
+        if ($association instanceof BelongsTo) {
+            // BelongsTo's foreignKey/otherKey are both unprefixed column names
+            // (e.g. "customer_id" on the base table, "id" on the related one).
+            return [
+                'table' => $related->getTable(),
+                'on' => [$instance->getTable() . '.' . $foreignKey, $related->getTable() . '.' . $otherKey],
+            ];
+        }
+
+        // HasOne's foreignKey already includes the related table's prefix
+        // (set up that way in Model::hasOne()); otherKey is the base table's
+        // own (unprefixed) local key.
+        return [
+            'table' => $related->getTable(),
+            'on' => [$foreignKey, $instance->getTable() . '.' . $otherKey],
+        ];
     }
 
     protected function findRecord(string $key): ?array

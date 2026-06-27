@@ -65,10 +65,11 @@ abstract class Column
 
     public function isSortable(): bool
     {
-        // A relation column (dotted name, e.g. "customer.name") can't be pushed
-        // into a plain ORDER BY without a join — ignore ->sortable() for those
-        // rather than let it silently produce a broken query.
-        return $this->sortable && !str_contains($this->name, '.');
+        // A dotted name (e.g. "customer.name") is a relation column. Whether
+        // it's actually pushable to SQL depends on whether the resource can
+        // join that relation (Resource::relationJoin() — to-one relations
+        // only); that's resolved per-query in Resource::baseQuery(), not here.
+        return $this->sortable;
     }
 
     public function isSearchable(): bool
@@ -77,9 +78,10 @@ abstract class Column
     }
 
     /**
-     * Real (non-dotted) DB columns to search for this column: itself plus any
-     * declared via searchable([...]). Relation columns can't be pushed into a
-     * plain WHERE without a join, so they're excluded here.
+     * Columns to search for this column: itself plus any declared via
+     * searchable([...]). May include dotted relation names (e.g.
+     * "customer.name") — Resource::baseQuery() resolves whether each is
+     * actually pushable to SQL (joinable relation) and drops it otherwise.
      *
      * @return string[]
      */
@@ -89,9 +91,7 @@ abstract class Column
             return [];
         }
 
-        $columns = str_contains($this->name, '.') ? [] : [$this->name];
-
-        return array_values(array_unique([...$columns, ...$this->extraSearchable]));
+        return array_values(array_unique([$this->name, ...$this->extraSearchable]));
     }
 
     protected function value(array $record): mixed
