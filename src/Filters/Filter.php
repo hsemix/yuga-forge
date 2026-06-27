@@ -45,6 +45,16 @@ abstract class Filter
         return $this->default;
     }
 
+    /**
+     * Whether this filter should actually narrow the record set for the given
+     * current value. Default: "anything other than the declared default".
+     * Override for filter types where that's not the right test.
+     */
+    public function shouldApply(mixed $value): bool
+    {
+        return $value !== $this->default;
+    }
+
     abstract public function renderInput(mixed $value): string;
 
     abstract public function matches(array $record, mixed $filterValue): bool;

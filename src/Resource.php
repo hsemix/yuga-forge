@@ -96,14 +96,17 @@ abstract class Resource extends Component
                 continue;
             }
 
-            [$bucket, $rest] = explode('.', $key, 2);
+            $segments = explode('.', $key);
+            $bucket = $segments[0];
 
             if (!in_array($bucket, $this->arrayBuckets, true)) {
                 continue;
             }
 
-            $current = $this->{$bucket}[$rest] ?? null;
-            $this->{$bucket}[$rest] = $value;
+            $path = array_slice($segments, 1);
+            $current = $this->arrayGet($this->{$bucket}, $path);
+
+            $this->arraySet($this->{$bucket}, $path, $value);
 
             if ($current !== $value) {
                 $this->touch();
@@ -114,6 +117,36 @@ abstract class Resource extends Component
         }
 
         parent::setPublicState($state);
+    }
+
+    protected function arrayGet(array $array, array $path): mixed
+    {
+        foreach ($path as $segment) {
+            if (!is_array($array) || !array_key_exists($segment, $array)) {
+                return null;
+            }
+
+            $array = $array[$segment];
+        }
+
+        return $array;
+    }
+
+    protected function arraySet(array &$array, array $path, mixed $value): void
+    {
+        $segment = array_shift($path);
+
+        if ($path === []) {
+            $array[$segment] = $value;
+
+            return;
+        }
+
+        if (!isset($array[$segment]) || !is_array($array[$segment])) {
+            $array[$segment] = [];
+        }
+
+        $this->arraySet($array[$segment], $path, $value);
     }
 
     public function updated(string $property, mixed $value): void
@@ -351,7 +384,7 @@ abstract class Resource extends Component
         foreach ($table->getFilters() as $filter) {
             $value = $this->filters[$filter->getName()] ?? $filter->getDefault();
 
-            if ($value !== 'all' && $value !== null) {
+            if ($filter->shouldApply($value)) {
                 $records = array_values(array_filter(
                     $records,
                     fn (array $record) => $filter->matches($record, $value)
@@ -481,7 +514,11 @@ abstract class Resource extends Component
         $html .= '<header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">';
         $html .= '<div><span class="text-xs font-extrabold uppercase text-azure-600">' . $escape($label) . '</span>';
         $html .= '<h1 class="mt-1 text-3xl font-bold leading-tight text-slate-950 dark:text-white">' . $escape($label) . '</h1></div>';
-        $html .= '<button type="button" class="h-10 rounded-lg bg-azure-600 px-4 font-bold text-white shadow-sm hover:bg-azure-700" ylc:click="openCreate">+ New</button>';
+
+        if ($this->isCreatable()) {
+            $html .= '<button type="button" class="h-10 rounded-lg bg-azure-600 px-4 font-bold text-white shadow-sm hover:bg-azure-700" ylc:click="openCreate">+ New</button>';
+        }
+
         $html .= '</header>';
 
         $html .= '<section class="rounded-lg border border-slate-200 bg-white shadow-lg shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/20">';
@@ -499,7 +536,7 @@ abstract class Resource extends Component
             $count = count($this->selected);
             $html .= '<div class="flex items-center gap-2 rounded-lg bg-azure-50 px-3 py-2 text-sm font-bold text-azure-700 dark:bg-azure-500/10 dark:text-azure-200">';
             $html .= '<span>' . $count . ' selected</span>';
-            $html .= '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkDelete">Delete</button>';
+            $html .= $this->bulkActions($count);
             $html .= '<button type="button" class="text-azure-600 hover:underline" ylc:click="clearSelection">Clear</button>';
             $html .= '</div>';
         }
@@ -575,7 +612,6 @@ abstract class Resource extends Component
 
     protected function renderFormSlideOver(): string
     {
-        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
         $fields = static::form(Form::make())->getFields();
         $errors = $this->getErrors();
@@ -613,9 +649,18 @@ abstract class Resource extends Component
             $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($column->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $column->renderCell($this->viewing) . '</dd></div>';
         }
 
-        $html .= '</dl></aside></div>';
+        $html .= '</dl>' . $this->renderViewExtra($this->viewing) . '</aside></div>';
 
         return $html;
+    }
+
+    /**
+     * Extra markup appended inside the view slide-over, after the field list and
+     * before it closes — e.g. a record-specific action button. No-op by default.
+     */
+    protected function renderViewExtra(array $record): string
+    {
+        return '';
     }
 
     /**
@@ -628,8 +673,33 @@ abstract class Resource extends Component
         $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
 
-        return '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> '
-            . '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> '
-            . '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
+        $html = '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
+
+        if ($this->isCreatable()) {
+            $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> ';
+        }
+
+        $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
+
+        return $html;
+    }
+
+    /**
+     * Renders the bulk-selection toolbar actions (next to the "N selected" label).
+     * Override to add custom bulk actions alongside or instead of bulk delete.
+     */
+    protected function bulkActions(int $count): string
+    {
+        return '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkDelete">Delete</button>';
+    }
+
+    /**
+     * A resource with no form fields has nothing to create/edit — derived from
+     * the schema so "no create button" and "no edit action" stay in sync
+     * automatically for read-only resources (e.g. derived/system records).
+     */
+    protected function isCreatable(): bool
+    {
+        return static::form(Form::make())->getFields() !== [];
     }
 }
