@@ -1,0 +1,30 @@
+{
+    "name": "yuga/forge",
+    "description": "FilamentPHP-style resource/form/table builder for admin panels, built on Yuga Live Components.",
+    "keywords": ["yuga", "forge", "admin", "panel", "resource"],
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Hamidouh Semix",
+            "email": "semix.hamidouh@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2 || ^8.3 || ^8.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Yuga\\Forge\\": "src/"
+        }
+    },
+    "extra": {
+        "yuga": {
+            "providers": [
+                "Yuga\\Forge\\ForgeServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
