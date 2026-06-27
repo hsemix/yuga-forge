@@ -66,6 +66,29 @@ abstract class Resource extends Component
         }
     }
 
+    /**
+     * "sort" doesn't have a static class-default — it's computed in mount() from
+     * the first sortable column — so the generic #[Url] default-suppression in
+     * ylc-live-plugin.js (which reads the property's *declared* default) would
+     * otherwise always show "?sort=..." even when it's the effective default.
+     * Substitute the real computed default here so the URL stays clean.
+     */
+    public function getUrlProperties(): array
+    {
+        $properties = parent::getUrlProperties();
+
+        if (isset($properties['sort']) && $properties['sort']['default'] === '') {
+            foreach (static::table(Table::make())->getColumns() as $column) {
+                if ($column->isSortable()) {
+                    $properties['sort']['default'] = $column->getName();
+                    break;
+                }
+            }
+        }
+
+        return $properties;
+    }
+
     public function setPublicState(array $state): void
     {
         foreach ($state as $key => $value) {
