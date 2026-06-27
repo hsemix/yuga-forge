@@ -376,9 +376,12 @@ abstract class Resource extends Component
      * Builds the base query for this resource: ordered, search-filtered,
      * filter-constrained, relations eager-loaded — everything except the
      * limit/offset, which paginate() applies. Search is pushed down as a single
-     * parenthesized OR-group across searchable columns via a Raw expression,
-     * since Elegant's where()/orWhere() have no grouping support of their own
-     * (chaining them would mis-parse against any AND filter added afterwards).
+     * grouped OR across searchable columns via where(Closure) — Elegant forwards
+     * a one-argument where(Closure) straight to the underlying query builder,
+     * which evaluates it against a NestedCriteria and wraps it in real
+     * parentheses (confirmed via toSql()) — plain chained where()/orWhere()
+     * calls have no such grouping and would mis-parse against any AND filter
+     * added afterwards (SQL's AND binds tighter than OR).
      *
      * @return \Yuga\Database\Elegant\Builder
      */
@@ -396,10 +399,12 @@ abstract class Resource extends Component
 
             if ($searchable !== []) {
                 $like = '%' . $search . '%';
-                $conditions = implode(' OR ', array_map(fn ($name) => "`{$name}` LIKE ?", $searchable));
-                $bindings = array_fill(0, count($searchable), $like);
 
-                $query->where($modelClass::raw("({$conditions})", $bindings));
+                $query->where(function ($nested) use ($searchable, $like) {
+                    foreach ($searchable as $i => $column) {
+                        $i === 0 ? $nested->where($column, 'like', $like) : $nested->orWhere($column, 'like', $like);
+                    }
+                });
             }
         }
 
