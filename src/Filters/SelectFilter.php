@@ -41,8 +41,8 @@ class SelectFilter extends Filter
         return '<select class="' . $inputClass . '" ylc:model="filters.' . $this->name . '">' . $optionsHtml . '</select>';
     }
 
-    public function matches(array $record, mixed $filterValue): bool
+    public function apply($query, mixed $value): void
     {
-        return (string) ($record[$this->name] ?? null) === (string) $filterValue;
+        $query->where($this->name, $value);
     }
 }

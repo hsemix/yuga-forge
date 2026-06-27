@@ -9,9 +9,14 @@ use Yuga\Live\Component;
 
 abstract class Resource extends Component
 {
-    protected string $tableName;
+    /** @var class-string<\Yuga\Database\Elegant\Model> */
+    protected string $model;
+
     protected string $recordKey = 'public_id';
     protected string $keyPrefix = 'REC';
+
+    /** @var string[] relations to eager-load (passed straight to the model's ->with()) */
+    protected array $with = [];
 
     /** @var string[] public array properties that accept dotted ylc:model bindings, e.g. "data.name" */
     protected array $arrayBuckets = ['data', 'filters'];
@@ -51,12 +56,8 @@ abstract class Resource extends Component
         $table = static::table(Table::make());
 
         if ($this->sort === '') {
-            foreach ($table->getColumns() as $column) {
-                if ($column->isSortable()) {
-                    $this->sort = $column->getName();
-                    break;
-                }
-            }
+            $this->sort = $this->defaultSort() ?? $this->firstSortableColumn($table) ?? '';
+            $this->direction = $this->defaultDirection();
         }
 
         if (empty($this->filters)) {
@@ -67,26 +68,50 @@ abstract class Resource extends Component
     }
 
     /**
-     * "sort" doesn't have a static class-default — it's computed in mount() from
-     * the first sortable column — so the generic #[Url] default-suppression in
-     * ylc-live-plugin.js (which reads the property's *declared* default) would
-     * otherwise always show "?sort=..." even when it's the effective default.
-     * Substitute the real computed default here so the URL stays clean.
+     * "sort" doesn't have a static class-default — it's computed in mount()
+     * (defaultSort(), or the first sortable column) — so the generic #[Url]
+     * default-suppression in ylc-live-plugin.js (which reads the property's
+     * *declared* default) would otherwise always show "?sort=..." even when
+     * it's the effective default. Substitute the real computed default here
+     * so the URL stays clean.
      */
     public function getUrlProperties(): array
     {
         $properties = parent::getUrlProperties();
 
         if (isset($properties['sort']) && $properties['sort']['default'] === '') {
-            foreach (static::table(Table::make())->getColumns() as $column) {
-                if ($column->isSortable()) {
-                    $properties['sort']['default'] = $column->getName();
-                    break;
-                }
-            }
+            $properties['sort']['default'] = $this->defaultSort()
+                ?? $this->firstSortableColumn(static::table(Table::make()))
+                ?? '';
         }
 
         return $properties;
+    }
+
+    /**
+     * Override to force a specific default sort column instead of "the first
+     * sortable column" (e.g. a derived/log-like resource that should default
+     * to newest-first instead of whatever column happens to be listed first).
+     */
+    protected function defaultSort(): ?string
+    {
+        return null;
+    }
+
+    protected function defaultDirection(): string
+    {
+        return 'asc';
+    }
+
+    protected function firstSortableColumn(Table $table): ?string
+    {
+        foreach ($table->getColumns() as $column) {
+            if ($column->isSortable()) {
+                return $column->getName();
+            }
+        }
+
+        return null;
     }
 
     public function setPublicState(array $state): void
@@ -285,7 +310,7 @@ abstract class Resource extends Component
         if ($this->editingKey) {
             $payload['updated_at'] = $this->now();
 
-            db($this->tableName)->where($this->recordKey, $this->editingKey)->update($payload);
+            ($this->model)::where($this->recordKey, $this->editingKey)->update($payload);
 
             $this->toast('Record updated.');
             $this->afterSave(false, $this->editingKey);
@@ -294,7 +319,7 @@ abstract class Resource extends Component
             $payload[$this->recordKey] = $key;
             $payload['created_at'] = $this->now();
 
-            db($this->tableName)->insert($payload);
+            ($this->model)::create($payload);
 
             $this->toast('Record created.');
             $this->afterSave(true, $key);
@@ -324,7 +349,11 @@ abstract class Resource extends Component
 
     public function deleteOne(string $key): void
     {
-        db($this->tableName)->where($this->recordKey, $key)->delete();
+        // delete(true) = permanent. Elegant's default delete() is a *soft*
+        // delete, and if the table has no deleted_at column it will silently
+        // ALTER TABLE to add one rather than removing the row — never what a
+        // "Delete" confirm button here means.
+        ($this->model)::where($this->recordKey, $key)->delete(true);
         $this->selected = array_values(array_diff($this->selected, [$key]));
         $this->toast('Record deleted.');
     }
@@ -336,109 +365,71 @@ abstract class Resource extends Component
         }
 
         foreach ($this->selected as $key) {
-            db($this->tableName)->where($this->recordKey, $key)->delete();
+            ($this->model)::where($this->recordKey, $key)->delete(true);
         }
 
         $this->toast(count($this->selected) . ' record(s) deleted.');
         $this->selected = [];
     }
 
-    protected function records(): array
+    /**
+     * Builds the base query for this resource: ordered, search-filtered,
+     * filter-constrained, relations eager-loaded — everything except the
+     * limit/offset, which paginate() applies. Search is pushed down as a single
+     * parenthesized OR-group across searchable columns via a Raw expression,
+     * since Elegant's where()/orWhere() have no grouping support of their own
+     * (chaining them would mis-parse against any AND filter added afterwards).
+     *
+     * @return \Yuga\Database\Elegant\Builder
+     */
+    protected function baseQuery(Table $table)
     {
-        return db($this->tableName)->get()->toArray();
-    }
+        $modelClass = $this->model;
+        $query = $modelClass::orderBy($this->sort, $this->direction === 'asc' ? 'asc' : 'desc');
 
-    protected function findRecord(string $key): ?array
-    {
-        foreach ($this->records() as $record) {
-            if (($record[$this->recordKey] ?? null) === $key) {
-                return $record;
+        $search = trim($this->search);
+
+        if ($search !== '' && $table->getColumns() !== []) {
+            $searchable = array_values(array_unique(array_merge(
+                ...array_map(fn ($column) => $column->getSearchableColumns(), $table->getColumns())
+            )));
+
+            if ($searchable !== []) {
+                $like = '%' . $search . '%';
+                $conditions = implode(' OR ', array_map(fn ($name) => "`{$name}` LIKE ?", $searchable));
+                $bindings = array_fill(0, count($searchable), $like);
+
+                $query->where($modelClass::raw("({$conditions})", $bindings));
             }
-        }
-
-        return null;
-    }
-
-    protected function filteredRecords(Table $table): array
-    {
-        $records = $this->records();
-        $query = strtolower(trim($this->search));
-
-        if ($query !== '') {
-            $searchable = array_map(
-                fn ($column) => $column->getName(),
-                array_filter($table->getColumns(), fn ($column) => $column->isSearchable())
-            );
-
-            $records = array_values(array_filter($records, function (array $record) use ($searchable, $query) {
-                foreach ($searchable as $name) {
-                    if (str_contains(strtolower((string) ($record[$name] ?? '')), $query)) {
-                        return true;
-                    }
-                }
-
-                return false;
-            }));
         }
 
         foreach ($table->getFilters() as $filter) {
             $value = $this->filters[$filter->getName()] ?? $filter->getDefault();
 
             if ($filter->shouldApply($value)) {
-                $records = array_values(array_filter(
-                    $records,
-                    fn (array $record) => $filter->matches($record, $value)
-                ));
+                $filter->apply($query, $value);
             }
         }
 
-        return $records;
-    }
-
-    protected function sortedRecords(array $records): array
-    {
-        if ($this->sort === '') {
-            return $records;
+        if ($this->with !== []) {
+            $query->with($this->with);
         }
 
-        $sort = $this->sort;
-        $direction = $this->direction === 'asc' ? 'asc' : 'desc';
-
-        usort($records, function (array $a, array $b) use ($sort, $direction) {
-            $aValue = $a[$sort] ?? null;
-            $bValue = $b[$sort] ?? null;
-
-            $result = is_numeric($aValue) && is_numeric($bValue)
-                ? $aValue <=> $bValue
-                : strcasecmp((string) $aValue, (string) $bValue);
-
-            return $direction === 'asc' ? $result : -$result;
-        });
-
-        return $records;
+        return $query;
     }
 
-    protected function paginate(array $records): array
+    protected function findRecord(string $key): ?array
     {
-        $total = count($records);
-        $perPage = in_array($this->perPage, [5, 10, 25, 50], true) ? $this->perPage : 10;
-        $pages = max(1, (int) ceil($total / $perPage));
-        $page = min(max(1, $this->page), $pages);
-        $offset = ($page - 1) * $perPage;
-        $rows = array_slice($records, $offset, $perPage);
+        $modelClass = $this->model;
+        $query = $modelClass::where($this->recordKey, $key);
 
-        $this->page = $page;
+        if ($this->with !== []) {
+            $query->with($this->with);
+        }
 
-        return [
-            'rows' => $rows,
-            'total' => $total,
-            'page' => $page,
-            'pages' => $pages,
-            'perPage' => $perPage,
-            'from' => $total ? $offset + 1 : 0,
-            'to' => min($total, $offset + count($rows)),
-            'pageLinks' => $this->pageLinks($page, $pages),
-        ];
+        $record = $query->first();
+
+        return $record?->toArray();
     }
 
     protected function pageLinks(int $page, int $pages): array
@@ -460,10 +451,11 @@ abstract class Resource extends Component
 
     protected function generateKey(): string
     {
+        $modelClass = $this->model;
         $max = 0;
 
-        foreach ($this->records() as $record) {
-            $number = (int) preg_replace('/\D+/', '', (string) ($record[$this->recordKey] ?? ''));
+        foreach ($modelClass::all([$this->recordKey]) as $record) {
+            $number = (int) preg_replace('/\D+/', '', (string) ($record->{$this->recordKey} ?? ''));
             $max = max($max, $number);
         }
 
@@ -490,9 +482,44 @@ abstract class Resource extends Component
     public function render()
     {
         $table = static::table(Table::make());
-        $records = $this->paginate($this->sortedRecords($this->filteredRecords($table)));
+        $perPage = in_array($this->perPage, [5, 10, 25, 50], true) ? $this->perPage : 10;
+        $requestedPage = max(1, $this->page);
 
-        return $this->renderPage($table, $records);
+        $query = $this->baseQuery($table);
+        $results = $query->paginate($perPage, $requestedPage);
+        $pagination = $query->getPagination();
+        $pages = max(1, (int) $pagination->totalPages());
+
+        // paginate()/Pagination don't clamp an out-of-range page themselves —
+        // a stale page (e.g. from the URL, after a filter shrank the result
+        // set) would otherwise just return zero rows instead of snapping back.
+        if ($requestedPage > $pages) {
+            $query = $this->baseQuery($table);
+            $results = $query->paginate($perPage, $pages);
+            $pagination = $query->getPagination();
+        }
+
+        $this->page = $pagination->getCurrentPage();
+
+        $rows = [];
+
+        foreach ($results as $record) {
+            $rows[] = $record->toArray();
+        }
+
+        $total = $pagination->getTotalCount();
+        $offset = ($this->page - 1) * $perPage;
+
+        return $this->renderPage($table, [
+            'rows' => $rows,
+            'total' => $total,
+            'page' => $this->page,
+            'pages' => $pages,
+            'perPage' => $perPage,
+            'from' => $total ? $offset + 1 : 0,
+            'to' => min($total, $offset + count($rows)),
+            'pageLinks' => $this->pageLinks($this->page, $pages),
+        ]);
     }
 
     protected function renderPage(Table $table, array $pagination): string

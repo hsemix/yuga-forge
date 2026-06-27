@@ -19,20 +19,17 @@ class DateRangeFilter extends Filter
             . '</div>';
     }
 
-    public function matches(array $record, mixed $filterValue): bool
+    public function apply($query, mixed $value): void
     {
-        $from = $filterValue['from'] ?? '';
-        $to = $filterValue['to'] ?? '';
-        $fieldValue = (string) ($record[$this->name] ?? '');
+        $from = $value['from'] ?? '';
+        $to = $value['to'] ?? '';
 
-        if ($from !== '' && $fieldValue < $from) {
-            return false;
+        if ($from !== '') {
+            $query->where($this->name, '>=', $from);
         }
 
-        if ($to !== '' && $fieldValue > $to) {
-            return false;
+        if ($to !== '') {
+            $query->where($this->name, '<=', $to);
         }
-
-        return true;
     }
 }

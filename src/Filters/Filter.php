@@ -57,5 +57,11 @@ abstract class Filter
 
     abstract public function renderInput(mixed $value): string;
 
-    abstract public function matches(array $record, mixed $filterValue): bool;
+    /**
+     * Constrain the given query builder for this filter's current value.
+     * Only called when shouldApply($value) is true.
+     *
+     * @param \Yuga\Database\Elegant\Builder $query
+     */
+    abstract public function apply($query, mixed $value): void;
 }
