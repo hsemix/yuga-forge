@@ -538,11 +538,7 @@ abstract class Resource extends Component
                     $html .= '<td class="border-t border-slate-200 px-5 py-3 dark:border-slate-800">' . $column->renderCell($record) . '</td>';
                 }
 
-                $html .= '<td class="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800">';
-                $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
-                $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> ';
-                $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
-                $html .= '</td></tr>';
+                $html .= '<td class="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800">' . $this->rowActions($key, $record) . '</td></tr>';
             }
         } else {
             $colspan = count($columns) + 2;
@@ -620,5 +616,20 @@ abstract class Resource extends Component
         $html .= '</dl></aside></div>';
 
         return $html;
+    }
+
+    /**
+     * Renders the per-row action buttons. Override to add/remove/replace actions
+     * (e.g. a "Download" link instead of "View", or an extra custom action) —
+     * this is the full markup for the cell, not a list that gets merged.
+     */
+    protected function rowActions(string $key, array $record): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
+
+        return '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> '
+            . '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> '
+            . '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
     }
 }
