@@ -12,6 +12,7 @@ use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
 use Yuga\Live\Component;
 use Yuga\Models\Auth;
+use Yuga\Support\Inflect;
 
 abstract class Resource extends Component
 {
@@ -647,6 +648,50 @@ abstract class Resource extends Component
     protected function now(): string
     {
         return date('Y-m-d H:i:s');
+    }
+
+    /** @var string The table notify() inserts into. Override if your app uses a different one. */
+    protected string $notificationsTable = 'notifications';
+
+    /**
+     * Inserts a row into the app's notifications table and emits "notify" so
+     * any listening component (a notifications bell, etc.) picks it up -
+     * the exact boilerplate every resource that wants this otherwise repeats
+     * by hand in afterSave()/a custom action. $url/$type default from the
+     * resource itself (see notificationUrl()/notificationType()) but can be
+     * overridden per call.
+     */
+    protected function notify(string $title, string $message, ?string $url = null, ?string $type = null): void
+    {
+        db($this->notificationsTable)->insert([
+            'public_id' => 'NTF-' . uniqid(),
+            'type' => $type ?? $this->notificationType(),
+            'title' => $title,
+            'message' => $message,
+            'url' => $url ?? $this->notificationUrl(),
+            'created_at' => $this->now(),
+        ]);
+
+        $this->emit('notify');
+    }
+
+    /**
+     * Default notification "type" tag: the resource's label, singularized
+     * and lowercased (e.g. "ProductsResource" -> "product").
+     */
+    protected function notificationType(): string
+    {
+        return strtolower(Inflect::singularize($this->label()));
+    }
+
+    /**
+     * Default notification URL: assumes this resource is mounted at
+     * /admin/{kebab-case label} (true for every resource in this app) -
+     * override if yours lives somewhere else.
+     */
+    protected function notificationUrl(): string
+    {
+        return '/admin/' . strtolower(str_replace(' ', '-', $this->label()));
     }
 
     /**
