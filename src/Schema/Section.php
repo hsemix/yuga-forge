@@ -16,6 +16,7 @@ class Section
 {
     protected string $heading;
     protected ?string $description = null;
+    protected int $columns = 1;
 
     /** @var Field[] */
     protected array $fields = [];
@@ -31,6 +32,18 @@ class Section
     public function description(string $description): static
     {
         $this->description = $description;
+
+        return $this;
+    }
+
+    /**
+     * Lays the section's fields out in a grid instead of stacked single-file
+     * (1 = the default). Supports 1-4; ask Resource::sectionGridClass() for
+     * the literal class, not a computed one.
+     */
+    public function columns(int $columns): static
+    {
+        $this->columns = $columns;
 
         return $this;
     }
@@ -51,6 +64,11 @@ class Section
     public function getDescription(): ?string
     {
         return $this->description;
+    }
+
+    public function getColumns(): int
+    {
+        return $this->columns;
     }
 
     /** @return Field[] */

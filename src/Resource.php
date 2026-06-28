@@ -986,11 +986,13 @@ abstract class Resource extends Component
 
         $html .= '</div>';
 
+        $html .= '<div class="grid gap-4 ' . $this->sectionGridClass($section->getColumns()) . '">';
+
         foreach ($section->getFields() as $field) {
             $html .= $this->renderFormField($field, $errors);
         }
 
-        $html .= '</div>';
+        $html .= '</div></div>';
 
         return $html;
     }
@@ -1009,23 +1011,32 @@ abstract class Resource extends Component
 
         foreach ($columns as $column) {
             $shown[] = $column->getName();
-            $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($column->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $column->renderCell($this->viewing) . '</dd></div>';
+            $html .= $this->renderViewItem($column->getLabel(), $column->renderCell($this->viewing));
         }
 
+        $sectionsHtml = '';
+
         // A column only covers what's already shown in the table - form
-        // fields with no matching column (e.g. a description or image
-        // that's not worth a dedicated list column) would otherwise be
-        // invisible here even though they're genuinely saved.
-        foreach (static::form(Form::make())->getFields() as $field) {
-            if (in_array($field->getName(), $shown, true)) {
+        // fields/sections with no matching column (e.g. a description or
+        // image that's not worth a dedicated list column) would otherwise
+        // be invisible here even though they're genuinely saved. Sections
+        // render as their own bordered block after the main list, the same
+        // visual grouping the form itself uses - not folded into this <dl>.
+        foreach (static::form(Form::make())->getSchema() as $item) {
+            if ($item instanceof Section) {
+                $sectionsHtml .= $this->renderViewSection($item, $shown);
                 continue;
             }
 
-            $value = $this->viewing[$field->getName()] ?? null;
-            $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($field->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $field->renderDisplay($value) . '</dd></div>';
+            if (in_array($item->getName(), $shown, true)) {
+                continue;
+            }
+
+            $value = $this->viewing[$item->getName()] ?? null;
+            $html .= $this->renderViewItem($item->getLabel(), $item->renderDisplay($value));
         }
 
-        $html .= '</dl>';
+        $html .= '</dl>' . $sectionsHtml;
 
         foreach ($this->relationManagers() as $manager) {
             $html .= $this->renderRelationManager($manager);
@@ -1034,6 +1045,67 @@ abstract class Resource extends Component
         $html .= $this->renderViewExtra($this->viewing) . '</aside></div>';
 
         return $html;
+    }
+
+    protected function renderViewItem(string $label, string $valueHtml): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+
+        return '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($label) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $valueHtml . '</dd></div>';
+    }
+
+    /**
+     * Renders one Section as its own bordered block in the "Details" view -
+     * the read-only counterpart to renderFormSection(). $shown is the set of
+     * field names already covered by a table column (skipped here too, same
+     * reasoning as the flat fields loop in renderViewSlideOver()). Returns ''
+     * if every field in the section was already shown elsewhere, rather than
+     * an empty bordered box with just a heading.
+     */
+    protected function renderViewSection(Section $section, array $shown): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $items = '';
+
+        foreach ($section->getFields() as $field) {
+            if (in_array($field->getName(), $shown, true)) {
+                continue;
+            }
+
+            $value = $this->viewing[$field->getName()] ?? null;
+            $items .= $this->renderViewItem($field->getLabel(), $field->renderDisplay($value));
+        }
+
+        if ($items === '') {
+            return '';
+        }
+
+        $html = '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
+        $html .= '<div><h3 class="font-bold text-slate-950 dark:text-white">' . $escape($section->getHeading()) . '</h3>';
+
+        if ($section->getDescription() !== null) {
+            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($section->getDescription()) . '</p>';
+        }
+
+        $html .= '</div><dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '">' . $items . '</dl></div>';
+
+        return $html;
+    }
+
+    /**
+     * A fixed set of literal classes, not a dynamically built
+     * "grid-cols-{$n}" string - Tailwind only generates CSS for classes it
+     * finds as literal text while scanning source files (hit this bug
+     * pattern more than once already this session).
+     */
+    protected function sectionGridClass(int $columns): string
+    {
+        return match ($columns) {
+            2 => 'sm:grid-cols-2',
+            3 => 'sm:grid-cols-3',
+            4 => 'sm:grid-cols-4',
+            default => 'grid-cols-1',
+        };
     }
 
     /**
