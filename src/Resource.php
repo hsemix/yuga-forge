@@ -862,8 +862,24 @@ abstract class Resource extends Component
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeView">&#10005;</button></div>';
         $html .= '<dl class="mt-6 grid gap-4 text-sm">';
 
+        $shown = [];
+
         foreach ($columns as $column) {
+            $shown[] = $column->getName();
             $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($column->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $column->renderCell($this->viewing) . '</dd></div>';
+        }
+
+        // A column only covers what's already shown in the table - form
+        // fields with no matching column (e.g. a description or image
+        // that's not worth a dedicated list column) would otherwise be
+        // invisible here even though they're genuinely saved.
+        foreach (static::form(Form::make())->getFields() as $field) {
+            if (in_array($field->getName(), $shown, true)) {
+                continue;
+            }
+
+            $value = $this->viewing[$field->getName()] ?? null;
+            $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($field->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $field->renderDisplay($value) . '</dd></div>';
         }
 
         $html .= '</dl>' . $this->renderViewExtra($this->viewing) . '</aside></div>';

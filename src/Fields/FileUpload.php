@@ -63,6 +63,13 @@ class FileUpload extends Field
         return $preview !== '' ? $input . $preview : $input;
     }
 
+    public function renderDisplay(mixed $value): string
+    {
+        $preview = $this->renderPreview($value);
+
+        return $preview === '' ? '&mdash;' : $preview;
+    }
+
     protected function renderPreview(mixed $value): string
     {
         if ($value === null || $value === '' || $value === []) {
@@ -73,16 +80,52 @@ class FileUpload extends Field
         $html = '';
 
         foreach ($entries as $entry) {
-            $name = is_array($entry) ? ($entry['name'] ?? '') : basename((string) $entry);
-
-            if ($name === '') {
-                continue;
-            }
-
-            $html .= '<span class="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '</span> ';
+            $html .= $this->renderOnePreview($entry);
         }
 
-        return $html === '' ? '' : '<div class="mt-2 flex flex-wrap gap-1.5">' . $html . '</div>';
+        return $html === '' ? '' : '<div class="mt-2 flex flex-wrap gap-2">' . $html . '</div>';
+    }
+
+    protected function renderOnePreview(mixed $entry): string
+    {
+        $escape = fn ($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+
+        if (is_array($entry)) {
+            // A freshly uploaded temp file, not yet committed: {token, name,
+            // type, size, preview} - "preview" is /ylc/temp-upload/{token},
+            // which serves the file with the right Content-Type already.
+            $name = $entry['name'] ?? '';
+            $url = $entry['preview'] ?? null;
+            $isImage = str_starts_with((string) ($entry['type'] ?? ''), 'image/');
+        } else {
+            // An already-committed stored path, e.g.
+            // "/uploads/products/{token}_{original-name}.png".
+            $url = (string) $entry;
+            $name = $this->displayName($url);
+            $isImage = (bool) preg_match('/\.(png|jpe?g|gif|webp|svg)$/i', $url);
+        }
+
+        if ($name === '') {
+            return '';
+        }
+
+        if ($isImage && $url) {
+            return '<span class="inline-flex items-center gap-2 rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">'
+                . '<img src="' . $escape($url) . '" alt="" class="h-8 w-8 rounded object-cover">'
+                . $escape($name) . '</span>';
+        }
+
+        return '<span class="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">' . $escape($name) . '</span>';
+    }
+
+    /**
+     * A committed file's basename is "{40-char-hex-token}_{original-name}"
+     * (see commitOne()) - strip that prefix back off for display so the
+     * preview shows the name the user actually uploaded, not the storage key.
+     */
+    protected function displayName(string $path): string
+    {
+        return (string) preg_replace('/^[a-f0-9]{32,64}_/i', '', basename($path));
     }
 
     /**

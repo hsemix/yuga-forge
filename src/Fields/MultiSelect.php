@@ -59,4 +59,17 @@ class MultiSelect extends Field
 
         return parent::hydrate(is_array($decoded) ? $decoded : []);
     }
+
+    public function renderDisplay(mixed $value): string
+    {
+        $values = $this->hydrate($value);
+
+        if ($values === []) {
+            return '&mdash;';
+        }
+
+        $labels = array_map(fn ($v) => $this->options[$v] ?? $v, $values);
+
+        return htmlspecialchars(implode(', ', $labels), ENT_QUOTES, 'UTF-8');
+    }
 }

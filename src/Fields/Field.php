@@ -114,6 +114,22 @@ abstract class Field
         return $this;
     }
 
+    /**
+     * Read-only rendering of a stored value, used by Resource's "Details"
+     * view slide-over for any field that isn't already shown as a table
+     * column. $value is the raw stored value (e.g. a JSON string for
+     * MultiSelect), not hydrated form state - override per field-type for
+     * anything that needs decoding/special display.
+     */
+    public function renderDisplay(mixed $value): string
+    {
+        if (is_array($value)) {
+            return $value === [] ? '&mdash;' : htmlspecialchars(implode(', ', $value), ENT_QUOTES, 'UTF-8');
+        }
+
+        return $value === null || $value === '' ? '&mdash;' : htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    }
+
     abstract public function renderInput(mixed $value, ?string $error): string;
 
     public function render(mixed $value, ?string $error): string
