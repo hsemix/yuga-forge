@@ -6,6 +6,7 @@ use Yuga\Database\Elegant\Association\BelongsTo;
 use Yuga\Database\Elegant\Association\HasOne;
 use Yuga\Database\Elegant\Model;
 use Yuga\Forge\Authorization\Policy;
+use Yuga\Forge\Authorization\RolePolicy;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
@@ -980,16 +981,29 @@ abstract class Resource extends Component
 
         $this->policyResolved = true;
         $class = $this->resolvePolicyClass();
-        $this->resolvedPolicy = $class !== null ? new $class() : null;
+
+        // RolePolicy needs to know which resource it's guarding (for the
+        // optional per-resource override in config('permissions.resources'))
+        // - every other policy is a plain zero-arg instantiation.
+        $this->resolvedPolicy = match (true) {
+            $class === null => null,
+            $class === RolePolicy::class => new RolePolicy(static::class),
+            default => new $class(),
+        };
 
         return $this->resolvedPolicy;
     }
 
     /**
-     * Explicit $policy wins; otherwise guesses App\Models\X -> App\Policies\
-     * XPolicy (mirrors Laravel/Filament's model->policy naming convention) —
-     * returns null (no policy, every ability allowed) if neither resolves to
-     * a real class.
+     * Resolution order: an explicit $policy override; else the conventional
+     * App\Models\X -> App\Policies\XPolicy guess (mirrors Laravel/Filament);
+     * else RolePolicy, *only* once config('permissions.roles') has actually
+     * been defined - so a project that hasn't set up roles at all keeps the
+     * original "no policy = every ability allowed" default rather than
+     * suddenly denying everything once this exists. Once a permissions
+     * config is defined, it becomes the default for every resource without
+     * each one needing its own bespoke Policy class (and the maintenance
+     * risk of one being left in place - or removed - after the fact).
      */
     protected function resolvePolicyClass(): ?string
     {
@@ -999,7 +1013,15 @@ abstract class Resource extends Component
 
         $guess = preg_replace('/\\\\Models\\\\/', '\\Policies\\', $this->model) . 'Policy';
 
-        return class_exists($guess) ? $guess : null;
+        if (class_exists($guess)) {
+            return $guess;
+        }
+
+        if ((array) config('permissions.roles', []) !== []) {
+            return RolePolicy::class;
+        }
+
+        return null;
     }
 
     protected function currentUser(): mixed
