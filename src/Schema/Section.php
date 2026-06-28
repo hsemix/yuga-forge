@@ -1,0 +1,61 @@
+<?php
+
+namespace Yuga\Forge\Schema;
+
+use Yuga\Forge\Fields\Field;
+
+/**
+ * Groups a subset of a Form's fields under a heading - drop one or more of
+ * these directly into Form::schema() alongside (or instead of) bare Field
+ * instances. Form::getFields() flattens through these automatically, so
+ * every existing consumer (validation, save(), the "Details" fallback
+ * field list) keeps working unchanged; only the form's own renderer needs
+ * to know about Section specifically (see Form::getSchema()).
+ */
+class Section
+{
+    protected string $heading;
+    protected ?string $description = null;
+
+    /** @var Field[] */
+    protected array $fields = [];
+
+    public static function make(string $heading): static
+    {
+        $section = new static();
+        $section->heading = $heading;
+
+        return $section;
+    }
+
+    public function description(string $description): static
+    {
+        $this->description = $description;
+
+        return $this;
+    }
+
+    /** @param Field[] $fields */
+    public function schema(array $fields): static
+    {
+        $this->fields = $fields;
+
+        return $this;
+    }
+
+    public function getHeading(): string
+    {
+        return $this->heading;
+    }
+
+    public function getDescription(): ?string
+    {
+        return $this->description;
+    }
+
+    /** @return Field[] */
+    public function getFields(): array
+    {
+        return $this->fields;
+    }
+}

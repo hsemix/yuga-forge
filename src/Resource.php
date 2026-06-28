@@ -7,8 +7,10 @@ use Yuga\Database\Elegant\Association\HasOne;
 use Yuga\Database\Elegant\Model;
 use Yuga\Forge\Authorization\Policy;
 use Yuga\Forge\Authorization\RolePolicy;
+use Yuga\Forge\Fields\Field;
 use Yuga\Forge\Relations\RelationManager;
 use Yuga\Forge\Schema\Form;
+use Yuga\Forge\Schema\Section;
 use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
 use Yuga\Live\Component;
@@ -941,7 +943,7 @@ abstract class Resource extends Component
     protected function renderFormSlideOver(): string
     {
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
-        $fields = static::form(Form::make())->getFields();
+        $schema = static::form(Form::make())->getSchema();
         $errors = $this->getErrors();
 
         $html = '<div class="fixed inset-0 z-40 flex justify-end"><div class="absolute inset-0 bg-slate-950/40" ylc:click="closeForm"></div>';
@@ -950,15 +952,45 @@ abstract class Resource extends Component
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeForm">&#10005;</button></div>';
         $html .= '<div class="mt-6 grid gap-4">';
 
-        foreach ($fields as $field) {
-            $value = $this->data[$field->getName()] ?? $field->getDefault();
-            $error = $errors[$field->getName()][0] ?? null;
-            $html .= $field->render($value, $error);
+        foreach ($schema as $item) {
+            $html .= $item instanceof Section
+                ? $this->renderFormSection($item, $errors)
+                : $this->renderFormField($item, $errors);
         }
 
         $html .= '<div class="mt-2 flex gap-2"><button type="button" class="h-10 flex-1 rounded-lg bg-azure-600 font-bold text-white hover:bg-azure-700" ylc:click="save">Save</button>';
         $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="closeForm">Cancel</button></div>';
         $html .= '</div></aside></div>';
+
+        return $html;
+    }
+
+    protected function renderFormField(Field $field, array $errors): string
+    {
+        $value = $this->data[$field->getName()] ?? $field->getDefault();
+        $error = $errors[$field->getName()][0] ?? null;
+
+        return $field->render($value, $error);
+    }
+
+    protected function renderFormSection(Section $section, array $errors): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+
+        $html = '<div class="grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
+        $html .= '<div><h3 class="font-bold text-slate-950 dark:text-white">' . $escape($section->getHeading()) . '</h3>';
+
+        if ($section->getDescription() !== null) {
+            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($section->getDescription()) . '</p>';
+        }
+
+        $html .= '</div>';
+
+        foreach ($section->getFields() as $field) {
+            $html .= $this->renderFormField($field, $errors);
+        }
+
+        $html .= '</div>';
 
         return $html;
     }
