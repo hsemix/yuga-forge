@@ -20,4 +20,14 @@ class DatePicker extends Field
 
         return '<input type="' . $type . '" class="h-10 ' . static::inputClass() . '" value="' . $escape($value) . '" ylc:model="' . $this->modelAttr() . '">';
     }
+
+    /**
+     * An emptied date input sends '' (a native <input type="date"> can't
+     * send null directly), but a DATE/DATETIME column rejects '' outright
+     * ("Incorrect date value: ''") - it needs a real NULL for "no date".
+     */
+    public function dehydrate(mixed $value): mixed
+    {
+        return parent::dehydrate($value === '' ? null : $value);
+    }
 }

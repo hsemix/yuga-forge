@@ -75,10 +75,35 @@ abstract class Resource extends Component
     public bool $showView = false;
     public ?array $viewing = null;
 
+    /**
+     * Set by mount() when a record key arrives as a mount param (see the
+     * docblock there) - true means this instance is showing a dedicated
+     * full page for one record (view or edit), not the list+overlay combo.
+     * Not #[Url]-bound: ownership of the URL here is the app's own route
+     * (a real path segment, per Hamid's call), not a query string this
+     * component manages itself.
+     */
+    public bool $pageMode = false;
+
     abstract public static function form(Form $form): Form;
 
     abstract public static function table(Table $table): Table;
 
+    /**
+     * A consuming app that wants a dedicated page for one record (a real
+     * route, not the list's overlay) passes the record key as the first
+     * mount param, e.g.:
+     *
+     *     Route::get('/products/{key}', ...);
+     *     // in the controller: ylc('admin.products-resource', [$key])
+     *     Route::get('/products/{key}/edit', ...);
+     *     // in the controller: ylc('admin.products-resource', [$key, 'edit'])
+     *
+     * Forge can't register these routes itself - it doesn't own routing in
+     * the consuming app - so this is a convention to opt into, not
+     * something that happens automatically. See listUrl()/recordUrl()/
+     * editUrl() for the matching URL conventions used to navigate back out.
+     */
     public function mount(...$params): void
     {
         $table = static::table(Table::make());
@@ -91,6 +116,16 @@ abstract class Resource extends Component
         if (empty($this->filters)) {
             foreach ($table->getFilters() as $filter) {
                 $this->filters[$filter->getName()] = $filter->getDefault();
+            }
+        }
+
+        if (isset($params[0]) && is_string($params[0]) && $params[0] !== '') {
+            $this->pageMode = true;
+
+            if (($params[1] ?? null) === 'edit') {
+                $this->openEdit($params[0]);
+            } else {
+                $this->openView($params[0]);
             }
         }
     }
@@ -354,10 +389,22 @@ abstract class Resource extends Component
         $this->showForm = true;
     }
 
-    public function closeForm(): void
+    /**
+     * $redirectKey overrides what page-mode redirects to on close - needed
+     * for the just-created case, where editingKey was never set (there was
+     * nothing to edit yet) but the new record now has a real key to send
+     * the user to instead of back to the bare list. Anything UI-triggered
+     * (ylc:click="closeForm") just omits it and falls back to editingKey.
+     */
+    public function closeForm(?string $redirectKey = null): void
     {
+        $key = $redirectKey ?? $this->editingKey;
         $this->resetForm();
         $this->showForm = false;
+
+        if ($this->pageMode) {
+            $this->redirect($key !== null ? $this->recordUrl($key) : $this->listUrl());
+        }
     }
 
     protected function resetForm(): void
@@ -415,6 +462,7 @@ abstract class Resource extends Component
 
             $this->toast('Record updated.');
             $this->afterSave(false, $this->editingKey);
+            $this->closeForm();
         } else {
             $key = $this->generateKey();
             $payload[$this->recordKey] = $key;
@@ -424,9 +472,11 @@ abstract class Resource extends Component
 
             $this->toast('Record created.');
             $this->afterSave(true, $key);
+            // editingKey is still null here (there was nothing to edit) -
+            // pass the brand new key explicitly so page mode redirects to
+            // it instead of falling back to the bare list.
+            $this->closeForm($key);
         }
-
-        $this->closeForm();
     }
 
     /**
@@ -452,6 +502,13 @@ abstract class Resource extends Component
     {
         $this->showView = false;
         $this->viewing = null;
+
+        // Unlike closeForm(), there's no "go to the record" option here -
+        // closing a view *is* leaving the record, so page mode always goes
+        // back to the list.
+        if ($this->pageMode) {
+            $this->redirect($this->listUrl());
+        }
     }
 
     public function deleteOne(string $key): void
@@ -469,6 +526,12 @@ abstract class Resource extends Component
         ($this->model)::where($this->recordKey, $key)->delete(true);
         $this->selected = array_values(array_diff($this->selected, [$key]));
         $this->toast('Record deleted.');
+
+        // The record this page was dedicated to no longer exists - nothing
+        // left to render here, so leave for the list instead.
+        if ($this->pageMode) {
+            $this->redirect($this->listUrl());
+        }
     }
 
     public function bulkDelete(): void
@@ -730,13 +793,47 @@ abstract class Resource extends Component
     }
 
     /**
-     * Default notification URL: assumes this resource is mounted at
-     * /admin/{kebab-case label} (true for every resource in this app) -
-     * override if yours lives somewhere else.
+     * Default notification URL - now just an alias for listUrl(), kept
+     * separate in case a future resource wants notifications to point
+     * somewhere other than its own list (this one rarely needs overriding
+     * on its own; override listUrl() instead unless notifications
+     * specifically need to differ).
      */
     protected function notificationUrl(): string
     {
+        return $this->listUrl();
+    }
+
+    /**
+     * This resource's own list page. Assumes /admin/{kebab-case label}
+     * (true for every resource in this app) - override if yours lives
+     * somewhere else. Used as the "back to list" target in page mode, as
+     * the default notification URL, and (public, unlike every other URL
+     * helper here) by ForgeServiceProvider::boot() to auto-register
+     * dedicated page routes from config('forge.pages') - see its docblock.
+     */
+    public function listUrl(): string
+    {
         return '/admin/' . strtolower(str_replace(' ', '-', $this->label()));
+    }
+
+    /**
+     * A single record's dedicated view page, e.g. "/admin/products/PRD-201"
+     * - only meaningful if the consuming app actually registered a matching
+     * route (see mount()'s docblock); override if yours uses a different
+     * pattern (a different param name, a nested prefix, etc).
+     */
+    protected function recordUrl(string $key): string
+    {
+        return $this->listUrl() . '/' . rawurlencode($key);
+    }
+
+    /**
+     * A single record's dedicated edit page, e.g. "/admin/products/PRD-201/edit".
+     */
+    protected function editUrl(string $key): string
+    {
+        return $this->recordUrl($key) . '/edit';
     }
 
     /**
@@ -755,6 +852,18 @@ abstract class Resource extends Component
     {
         if (!$this->can('viewAny')) {
             return $this->renderForbidden();
+        }
+
+        if ($this->pageMode) {
+            if ($this->showForm) {
+                return $this->renderFormPage();
+            }
+
+            if ($this->showView && $this->viewing) {
+                return $this->renderViewPage(static::table(Table::make()));
+            }
+
+            return $this->renderPageNotFound();
         }
 
         $table = static::table(Table::make());
@@ -801,6 +910,87 @@ abstract class Resource extends Component
     protected function renderForbidden(): string
     {
         return '<div class="grid place-items-center rounded-lg border border-slate-200 bg-white p-12 text-center text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">You don\'t have permission to view this.</div>';
+    }
+
+    /**
+     * pageMode was set (a record key arrived via mount()) but neither
+     * openView() nor openEdit() left anything to show - the key didn't
+     * match a record, or the policy denied it. Still offers the way back
+     * out a slide-over/modal gets for free (it never leaves the list page
+     * at all) - a dedicated page needs its own link back.
+     */
+    protected function renderPageNotFound(): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+
+        return '<div class="grid min-w-0 gap-5">'
+            . '<a href="' . $escape($this->listUrl()) . '" class="text-sm font-bold text-azure-600 hover:underline">&larr; Back to ' . $escape($this->label()) . '</a>'
+            . '<div class="grid place-items-center rounded-lg border border-slate-200 bg-white p-12 text-center text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/20 dark:text-slate-400">Record not found, or you don\'t have permission to view it.</div>'
+            . '</div>';
+    }
+
+    /**
+     * 'slideover' (the default) or 'modal' - which chrome wrapPanel() uses
+     * for the create/edit form and the "Details" view when neither is
+     * showing as a dedicated page. Override per resource; this is a static
+     * per-resource choice, unrelated to pageMode (a resource can use modals
+     * for its quick inline view/edit *and* support dedicated pages - they
+     * don't conflict, pageMode always wins when a key arrived via mount()).
+     */
+    protected function panelDisplay(): string
+    {
+        return 'slideover';
+    }
+
+    /**
+     * Wraps $inner (the form or view's own content - heading, fields/dl,
+     * buttons) in either slide-over or modal chrome, per panelDisplay().
+     * $closeAction is whatever ylc:click target closes it (closeForm() or
+     * closeView()) - both already know how to redirect instead when
+     * pageMode is set, so this never needs to care about that itself.
+     */
+    protected function wrapPanel(string $inner, string $closeAction): string
+    {
+        if ($this->panelDisplay() === 'modal') {
+            return '<div class="fixed inset-0 z-40 flex items-center justify-center p-4">'
+                . '<div class="absolute inset-0 bg-slate-950/40" ylc:click="' . $closeAction . '"></div>'
+                . '<div class="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-6 shadow-2xl dark:bg-slate-900">'
+                . $inner
+                . '</div></div>';
+        }
+
+        return '<div class="fixed inset-0 z-40 flex justify-end">'
+            . '<div class="absolute inset-0 bg-slate-950/40" ylc:click="' . $closeAction . '"></div>'
+            . '<aside class="relative h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl dark:bg-slate-900">'
+            . $inner
+            . '</aside></div>';
+    }
+
+    /**
+     * A dedicated full page for one record - no overlay/backdrop, just a
+     * plain card in the normal content flow, with a real link back to the
+     * list instead of a ylc:click close action (there's no overlay state
+     * to toggle off; leaving the page IS closing it).
+     */
+    protected function renderRecordPage(string $inner): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+
+        return '<div class="grid min-w-0 gap-5">'
+            . '<a href="' . $escape($this->listUrl()) . '" class="text-sm font-bold text-azure-600 hover:underline">&larr; Back to ' . $escape($this->label()) . '</a>'
+            . '<section class="min-w-0 max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/20">'
+            . $inner
+            . '</section></div>';
+    }
+
+    protected function renderFormPage(): string
+    {
+        return $this->renderRecordPage($this->renderFormContent());
+    }
+
+    protected function renderViewPage(Table $table): string
+    {
+        return $this->renderRecordPage($this->renderViewContent($table->getColumns()));
     }
 
     protected function renderPage(Table $table, array $pagination): string
@@ -942,13 +1132,21 @@ abstract class Resource extends Component
 
     protected function renderFormSlideOver(): string
     {
+        return $this->wrapPanel($this->renderFormContent(), 'closeForm');
+    }
+
+    /**
+     * The form's own content - heading, fields/sections, save/cancel - with
+     * no opinion about what wraps it. Shared by the slide-over/modal chrome
+     * (wrapPanel()) and the dedicated full-page mode (renderFormPage()).
+     */
+    protected function renderFormContent(): string
+    {
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
         $schema = static::form(Form::make())->getSchema();
         $errors = $this->getErrors();
 
-        $html = '<div class="fixed inset-0 z-40 flex justify-end"><div class="absolute inset-0 bg-slate-950/40" ylc:click="closeForm"></div>';
-        $html .= '<aside class="relative h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl dark:bg-slate-900">';
-        $html .= '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">' . ($this->editingKey ? 'Edit' : 'New') . '</h2>';
+        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">' . ($this->editingKey ? 'Edit' : 'New') . '</h2>';
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeForm">&#10005;</button></div>';
         $html .= '<div class="mt-6 grid gap-4">';
 
@@ -960,7 +1158,7 @@ abstract class Resource extends Component
 
         $html .= '<div class="mt-2 flex gap-2"><button type="button" class="h-10 flex-1 rounded-lg bg-azure-600 font-bold text-white hover:bg-azure-700" ylc:click="save">Save</button>';
         $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="closeForm">Cancel</button></div>';
-        $html .= '</div></aside></div>';
+        $html .= '</div>';
 
         return $html;
     }
@@ -975,17 +1173,8 @@ abstract class Resource extends Component
 
     protected function renderFormSection(Section $section, array $errors): string
     {
-        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
-
         $html = '<div class="grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
-        $html .= '<div><h3 class="font-bold text-slate-950 dark:text-white">' . $escape($section->getHeading()) . '</h3>';
-
-        if ($section->getDescription() !== null) {
-            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($section->getDescription()) . '</p>';
-        }
-
-        $html .= '</div>';
-
+        $html .= $this->renderSectionHeading($section);
         $html .= '<div class="grid gap-4 ' . $this->sectionGridClass($section->getColumns()) . '">';
 
         foreach ($section->getFields() as $field) {
@@ -999,11 +1188,18 @@ abstract class Resource extends Component
 
     protected function renderViewSlideOver(array $columns): string
     {
-        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        return $this->wrapPanel($this->renderViewContent($columns), 'closeView');
+    }
 
-        $html = '<div class="fixed inset-0 z-40 flex justify-end"><div class="absolute inset-0 bg-slate-950/40" ylc:click="closeView"></div>';
-        $html .= '<aside class="relative h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl dark:bg-slate-900">';
-        $html .= '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">Details</h2>';
+    /**
+     * The "Details" view's own content - heading, field/column list,
+     * sections, relation managers, the renderViewExtra() hook - with no
+     * opinion about what wraps it. Shared by the slide-over/modal chrome
+     * (wrapPanel()) and the dedicated full-page mode (renderViewPage()).
+     */
+    protected function renderViewContent(array $columns): string
+    {
+        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">Details</h2>';
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeView">&#10005;</button></div>';
         $html .= '<dl class="mt-6 grid gap-4 text-sm">';
 
@@ -1042,7 +1238,7 @@ abstract class Resource extends Component
             $html .= $this->renderRelationManager($manager);
         }
 
-        $html .= $this->renderViewExtra($this->viewing) . '</aside></div>';
+        $html .= $this->renderViewExtra($this->viewing);
 
         return $html;
     }
@@ -1064,7 +1260,6 @@ abstract class Resource extends Component
      */
     protected function renderViewSection(Section $section, array $shown): string
     {
-        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $items = '';
 
         foreach ($section->getFields() as $field) {
@@ -1081,15 +1276,40 @@ abstract class Resource extends Component
         }
 
         $html = '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
-        $html .= '<div><h3 class="font-bold text-slate-950 dark:text-white">' . $escape($section->getHeading()) . '</h3>';
-
-        if ($section->getDescription() !== null) {
-            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($section->getDescription()) . '</p>';
-        }
-
-        $html .= '</div><dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '">' . $items . '</dl></div>';
+        $html .= $this->renderSectionHeading($section);
+        $html .= '<dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '">' . $items . '</dl></div>';
 
         return $html;
+    }
+
+    /**
+     * Shared between renderFormSection() and renderViewSection() - a
+     * Section's heading/description are both optional (a Section can be
+     * just a grouping/column-layout device with no label at all), so this
+     * renders '' when there's nothing to show rather than an empty heading
+     * wrapper.
+     */
+    protected function renderSectionHeading(Section $section): string
+    {
+        $heading = $section->getHeading();
+        $description = $section->getDescription();
+
+        if ($heading === null && $description === null) {
+            return '';
+        }
+
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $html = '<div>';
+
+        if ($heading !== null) {
+            $html .= '<h3 class="font-bold text-slate-950 dark:text-white">' . $escape($heading) . '</h3>';
+        }
+
+        if ($description !== null) {
+            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($description) . '</p>';
+        }
+
+        return $html . '</div>';
     }
 
     /**
