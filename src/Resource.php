@@ -5,10 +5,12 @@ namespace Yuga\Forge;
 use Yuga\Database\Elegant\Association\BelongsTo;
 use Yuga\Database\Elegant\Association\HasOne;
 use Yuga\Database\Elegant\Model;
+use Yuga\Forge\Authorization\Policy;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
 use Yuga\Live\Component;
+use Yuga\Models\Auth;
 
 abstract class Resource extends Component
 {
@@ -20,6 +22,17 @@ abstract class Resource extends Component
 
     /** @var string[] relations to eager-load (passed straight to the model's ->with()) */
     protected array $with = [];
+
+    /**
+     * @var class-string<Policy>|null Explicit override for the policy class.
+     *      Leave null to auto-resolve App\Models\X -> App\Policies\XPolicy
+     *      (see resolvePolicyClass()); if neither is set/exists, every
+     *      ability is allowed (no policy = open, not denied).
+     */
+    protected ?string $policy = null;
+
+    protected ?Policy $resolvedPolicy = null;
+    protected bool $policyResolved = false;
 
     /** @var string[] public array properties that accept dotted ylc:model bindings, e.g. "data.name" */
     protected array $arrayBuckets = ['data', 'filters'];
@@ -266,6 +279,10 @@ abstract class Resource extends Component
 
     public function openCreate(): void
     {
+        if (!$this->can('create')) {
+            return;
+        }
+
         $this->resetForm();
         $this->showForm = true;
     }
@@ -274,7 +291,7 @@ abstract class Resource extends Component
     {
         $record = $this->findRecord($key);
 
-        if (!$record) {
+        if (!$record || !$this->can('update', $record)) {
             return;
         }
 
@@ -306,6 +323,20 @@ abstract class Resource extends Component
 
     public function save(): void
     {
+        if ($this->editingKey) {
+            $existing = $this->findRecord($this->editingKey);
+
+            if (!$existing || !$this->can('update', $existing)) {
+                $this->closeForm();
+
+                return;
+            }
+        } elseif (!$this->can('create')) {
+            $this->closeForm();
+
+            return;
+        }
+
         $fields = static::form(Form::make())->getFields();
 
         foreach ($fields as $field) {
@@ -352,8 +383,14 @@ abstract class Resource extends Component
 
     public function openView(string $key): void
     {
-        $this->viewing = $this->findRecord($key);
-        $this->showView = (bool) $this->viewing;
+        $record = $this->findRecord($key);
+
+        if (!$record || !$this->can('view', $record)) {
+            return;
+        }
+
+        $this->viewing = $record;
+        $this->showView = true;
     }
 
     public function closeView(): void
@@ -364,6 +401,12 @@ abstract class Resource extends Component
 
     public function deleteOne(string $key): void
     {
+        $record = $this->findRecord($key);
+
+        if (!$record || !$this->can('delete', $record)) {
+            return;
+        }
+
         // delete(true) = permanent. Elegant's default delete() is a *soft*
         // delete, and if the table has no deleted_at column it will silently
         // ALTER TABLE to add one rather than removing the row — never what a
@@ -379,11 +422,20 @@ abstract class Resource extends Component
             return;
         }
 
+        $deleted = 0;
+
         foreach ($this->selected as $key) {
+            $record = $this->findRecord($key);
+
+            if (!$record || !$this->can('delete', $record)) {
+                continue;
+            }
+
             ($this->model)::where($this->recordKey, $key)->delete(true);
+            $deleted++;
         }
 
-        $this->toast(count($this->selected) . ' record(s) deleted.');
+        $this->toast($deleted . ' record(s) deleted.');
         $this->selected = [];
     }
 
@@ -602,6 +654,10 @@ abstract class Resource extends Component
 
     public function render()
     {
+        if (!$this->can('viewAny')) {
+            return $this->renderForbidden();
+        }
+
         $table = static::table(Table::make());
         $perPage = in_array($this->perPage, [5, 10, 25, 50], true) ? $this->perPage : 10;
         $requestedPage = max(1, $this->page);
@@ -641,6 +697,11 @@ abstract class Resource extends Component
             'to' => min($total, $offset + count($rows)),
             'pageLinks' => $this->pageLinks($this->page, $pages),
         ]);
+    }
+
+    protected function renderForbidden(): string
+    {
+        return '<div class="grid place-items-center rounded-lg border border-slate-200 bg-white p-12 text-center text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">You don\'t have permission to view this.</div>';
     }
 
     protected function renderPage(Table $table, array $pagination): string
@@ -820,14 +881,19 @@ abstract class Resource extends Component
     {
         $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
+        $html = '';
 
-        $html = '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
+        if ($this->can('view', $record)) {
+            $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
+        }
 
-        if ($this->isCreatable()) {
+        if ($this->isCreatable() && $this->can('update', $record)) {
             $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> ';
         }
 
-        $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
+        if ($this->can('delete', $record)) {
+            $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
+        }
 
         return $html;
     }
@@ -838,6 +904,10 @@ abstract class Resource extends Component
      */
     protected function bulkActions(int $count): string
     {
+        if (!$this->can('deleteAny')) {
+            return '';
+        }
+
         return '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkDelete">Delete</button>';
     }
 
@@ -848,6 +918,68 @@ abstract class Resource extends Component
      */
     protected function isCreatable(): bool
     {
-        return static::form(Form::make())->getFields() !== [];
+        return static::form(Form::make())->getFields() !== [] && $this->can('create');
+    }
+
+    /**
+     * Checks the current user against this resource's policy for the given
+     * ability ("viewAny", "view", "create", "update", "delete", "deleteAny").
+     * $record is the record array (from findRecord()/toArray()) for the
+     * per-record abilities — omitted for viewAny/create/deleteAny.
+     *
+     * With no policy resolved (see resolvePolicyClass()), every ability is
+     * allowed — authorization is opt-in per resource. Every UI entry point
+     * that calls this (rowActions(), bulkActions(), isCreatable(), render())
+     * is a *convenience* gate to hide what a user can't do; the real
+     * enforcement is the matching check inside the action methods themselves
+     * (openCreate(), openEdit(), save(), openView(), deleteOne(),
+     * bulkDelete()) — those run the same check regardless of what the UI
+     * rendered, since a forged AJAX call to e.g. deleteOne() skips the UI
+     * entirely.
+     */
+    public function can(string $ability, ?array $record = null): bool
+    {
+        $policy = $this->policyInstance();
+
+        if ($policy === null) {
+            return true;
+        }
+
+        return $record === null ? (bool) $policy->$ability($this->currentUser()) : (bool) $policy->$ability($this->currentUser(), $record);
+    }
+
+    protected function policyInstance(): ?Policy
+    {
+        if ($this->policyResolved) {
+            return $this->resolvedPolicy;
+        }
+
+        $this->policyResolved = true;
+        $class = $this->resolvePolicyClass();
+        $this->resolvedPolicy = $class !== null ? new $class() : null;
+
+        return $this->resolvedPolicy;
+    }
+
+    /**
+     * Explicit $policy wins; otherwise guesses App\Models\X -> App\Policies\
+     * XPolicy (mirrors Laravel/Filament's model->policy naming convention) —
+     * returns null (no policy, every ability allowed) if neither resolves to
+     * a real class.
+     */
+    protected function resolvePolicyClass(): ?string
+    {
+        if ($this->policy !== null) {
+            return class_exists($this->policy) ? $this->policy : null;
+        }
+
+        $guess = preg_replace('/\\\\Models\\\\/', '\\Policies\\', $this->model) . 'Policy';
+
+        return class_exists($guess) ? $guess : null;
+    }
+
+    protected function currentUser(): mixed
+    {
+        return Auth::user();
     }
 }
