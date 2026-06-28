@@ -85,18 +85,23 @@ class RolePolicy extends Policy
         return is_object($user) ? ($user->role ?? null) : null;
     }
 
+    /**
+     * config('permissions', []) - the top-level key with no dotted sub-path
+     * - does not return a plain array to index into; only a fully dotted
+     * path (config('permissions.roles'), etc.) drills down to one. Fetch
+     * each piece directly rather than fetching the whole file and indexing
+     * into it.
+     */
     protected function abilitiesFor(string $role): array
     {
-        $config = (array) config('permissions', []);
-
         if ($this->resourceClass !== null) {
-            $override = $config['resources'][$this->resourceClass][$role] ?? null;
+            $override = config("permissions.resources.{$this->resourceClass}.{$role}", null);
 
             if ($override !== null) {
                 return $override;
             }
         }
 
-        return $config['roles'][$role] ?? [];
+        return (array) config("permissions.roles.{$role}", []);
     }
 }
