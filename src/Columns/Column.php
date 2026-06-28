@@ -10,6 +10,7 @@ abstract class Column
     protected bool $searchable = false;
     protected array $extraSearchable = [];
     protected ?\Closure $formatUsing = null;
+    protected bool $toggleable = true;
 
     public static function make(string $name): static
     {
@@ -51,6 +52,23 @@ abstract class Column
         $this->formatUsing = $callback;
 
         return $this;
+    }
+
+    /**
+     * Pass false to pin this column as always visible — it won't appear in
+     * the "Columns" toggle panel at all, so it can't accidentally be hidden
+     * (e.g. the record's primary label, or an action-adjacent column).
+     */
+    public function toggleable(bool $toggleable = true): static
+    {
+        $this->toggleable = $toggleable;
+
+        return $this;
+    }
+
+    public function isToggleable(): bool
+    {
+        return $this->toggleable;
     }
 
     public function getName(): string

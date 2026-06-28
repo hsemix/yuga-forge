@@ -59,6 +59,9 @@ abstract class Resource extends Component
     public bool $showFilters = false;
     public array $filters = [];
 
+    public bool $showColumns = false;
+    public array $hiddenColumns = [];
+
     public bool $showForm = false;
     public ?string $editingKey = null;
     public array $data = [];
@@ -238,6 +241,25 @@ abstract class Resource extends Component
         }
 
         $this->page = 1;
+    }
+
+    public function toggleColumns(): void
+    {
+        $this->showColumns = !$this->showColumns;
+    }
+
+    public function toggleColumn(string $name): void
+    {
+        if (in_array($name, $this->hiddenColumns, true)) {
+            $this->hiddenColumns = array_values(array_diff($this->hiddenColumns, [$name]));
+        } else {
+            $this->hiddenColumns[] = $name;
+        }
+    }
+
+    public function resetColumns(): void
+    {
+        $this->hiddenColumns = [];
     }
 
     public function toggleSelect(string $key): void
@@ -768,6 +790,11 @@ abstract class Resource extends Component
 
         $columns = $table->getColumns();
         $filters = $table->getFilters();
+        $toggleableColumns = array_values(array_filter($columns, fn ($column) => $column->isToggleable()));
+        $visibleColumns = array_values(array_filter(
+            $columns,
+            fn ($column) => !$column->isToggleable() || !in_array($column->getName(), $this->hiddenColumns, true)
+        ));
         $rows = $pagination['rows'];
         $pageKeys = array_column($rows, $this->recordKey);
         $jsKeys = fn (array $keys) => '[' . implode(',', array_map(fn ($key) => "'" . addslashes((string) $key) . "'", $keys)) . ']';
@@ -792,6 +819,10 @@ abstract class Resource extends Component
 
         if ($filters !== []) {
             $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="toggleFilters">' . ($this->showFilters ? 'Hide filters' : 'Filters') . '</button>';
+        }
+
+        if ($toggleableColumns !== []) {
+            $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="toggleColumns">' . ($this->showColumns ? 'Hide columns' : 'Columns') . '</button>';
         }
 
         $html .= '</div>';
@@ -819,10 +850,23 @@ abstract class Resource extends Component
             $html .= '</div>';
         }
 
+        if ($this->showColumns && $toggleableColumns !== []) {
+            $html .= '<div class="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950 sm:flex-row sm:flex-wrap sm:items-center">';
+
+            foreach ($toggleableColumns as $column) {
+                $name = $column->getName();
+                $checked = !in_array($name, $this->hiddenColumns, true);
+                $html .= '<label class="flex items-center gap-2 text-sm font-bold text-slate-600 dark:text-slate-300"><input type="checkbox" class="h-4 w-4 rounded border-slate-300"' . ($checked ? ' checked' : '') . ' ylc:click="toggleColumn(\'' . $escape($name) . '\')">' . $escape($column->getLabel()) . '</label>';
+            }
+
+            $html .= '<button type="button" class="' . $buttonClass . ' mt-auto w-fit" ylc:click="resetColumns">Reset columns</button>';
+            $html .= '</div>';
+        }
+
         $html .= '<div class="overflow-x-auto"><table class="w-full min-w-[640px]"><thead><tr class="bg-slate-50 dark:bg-slate-900">';
         $html .= '<th class="w-10 border-t border-slate-200 px-5 py-3 dark:border-slate-800"><input type="checkbox" class="h-4 w-4 rounded border-slate-300"' . ($allSelected ? ' checked' : '') . ' ylc:click="' . ($allSelected ? 'clearSelection' : 'selectPage(' . $jsKeys($pageKeys) . ')') . '"></th>';
 
-        foreach ($columns as $column) {
+        foreach ($visibleColumns as $column) {
             $html .= '<th class="border-t border-slate-200 px-5 py-3 text-left text-xs font-bold uppercase text-slate-500 dark:border-slate-800 dark:text-slate-400">' . $column->renderHeader($this->sort, $this->direction) . '</th>';
         }
 
@@ -835,14 +879,14 @@ abstract class Resource extends Component
                 $html .= '<tr class="hover:bg-slate-50 dark:hover:bg-slate-800">';
                 $html .= '<td class="border-t border-slate-200 px-5 py-3 dark:border-slate-800"><input type="checkbox" class="h-4 w-4 rounded border-slate-300"' . (in_array($key, $this->selected, true) ? ' checked' : '') . ' ylc:click="toggleSelect(\'' . $escape($key) . '\')"></td>';
 
-                foreach ($columns as $column) {
+                foreach ($visibleColumns as $column) {
                     $html .= '<td class="border-t border-slate-200 px-5 py-3 dark:border-slate-800">' . $column->renderCell($record) . '</td>';
                 }
 
                 $html .= '<td class="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800">' . $this->rowActions($key, $record) . '</td></tr>';
             }
         } else {
-            $colspan = count($columns) + 2;
+            $colspan = count($visibleColumns) + 2;
             $html .= '<tr><td class="border-t border-slate-200 px-5 py-10 text-center text-slate-500 dark:border-slate-800 dark:text-slate-400" colspan="' . $colspan . '">No records match the current filters.</td></tr>';
         }
 
