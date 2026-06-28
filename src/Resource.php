@@ -1253,7 +1253,7 @@ abstract class Resource extends Component
                 continue;
             }
 
-            if (in_array($item->getName(), $shown, true)) {
+            if ($item->isHiddenField() || in_array($item->getName(), $shown, true)) {
                 continue;
             }
 
@@ -1292,7 +1292,7 @@ abstract class Resource extends Component
         $items = '';
 
         foreach ($section->getFields() as $field) {
-            if (in_array($field->getName(), $shown, true)) {
+            if ($field->isHiddenField() || in_array($field->getName(), $shown, true)) {
                 continue;
             }
 

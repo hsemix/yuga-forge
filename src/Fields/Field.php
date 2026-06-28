@@ -130,6 +130,17 @@ abstract class Field
         return $value === null || $value === '' ? '&mdash;' : htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
     }
 
+    /**
+     * True for a field that should never get a visible label/row anywhere -
+     * not in the form (just the bare input), not in the "Details" view's
+     * fallback field list. Only Hidden overrides this; everything else
+     * stays visible by default.
+     */
+    public function isHiddenField(): bool
+    {
+        return false;
+    }
+
     abstract public function renderInput(mixed $value, ?string $error): string;
 
     public function render(mixed $value, ?string $error): string

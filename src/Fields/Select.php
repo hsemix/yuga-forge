@@ -30,4 +30,21 @@ class Select extends Field
 
         return '<select class="h-10 ' . static::inputClass() . '" ylc:model="' . $this->modelAttr() . '">' . $optionsHtml . '</select>';
     }
+
+    /**
+     * Without this, the "Details" view would show the raw stored value
+     * (e.g. "search") instead of its label ("Search engine") for any Select
+     * whose option keys/labels actually differ - a no-op for the existing
+     * resources in this app, since their options happen to use the same
+     * string for both (e.g. "Active" => "Active"), but a real gap
+     * otherwise. Same lookup MultiSelect's renderDisplay() already does.
+     */
+    public function renderDisplay(mixed $value): string
+    {
+        if ($value === null || $value === '') {
+            return '&mdash;';
+        }
+
+        return htmlspecialchars((string) ($this->options[$value] ?? $value), ENT_QUOTES, 'UTF-8');
+    }
 }
