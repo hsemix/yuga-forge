@@ -299,7 +299,9 @@ abstract class Resource extends Component
         $this->data = [];
 
         foreach (static::form(Form::make())->getFields() as $field) {
-            $this->data[$field->getName()] = $record[$field->getName()] ?? $field->getDefault();
+            $this->data[$field->getName()] = array_key_exists($field->getName(), $record)
+                ? $field->hydrate($record[$field->getName()])
+                : $field->getDefault();
         }
 
         $this->showForm = true;
@@ -352,6 +354,12 @@ abstract class Resource extends Component
         }
 
         $payload = $this->data;
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field->getName(), $payload)) {
+                $payload[$field->getName()] = $field->dehydrate($payload[$field->getName()]);
+            }
+        }
 
         if ($this->editingKey) {
             $payload['updated_at'] = $this->now();

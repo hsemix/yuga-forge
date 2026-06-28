@@ -8,6 +8,8 @@ abstract class Field
     protected ?string $label = null;
     protected array $rules = [];
     protected mixed $default = null;
+    protected ?\Closure $dehydrateCallback = null;
+    protected ?\Closure $hydrateCallback = null;
 
     public static function make(string $name): static
     {
@@ -77,6 +79,39 @@ abstract class Field
     public function getDefault(): mixed
     {
         return $this->default;
+    }
+
+    /**
+     * Transforms a form-state value into what should be persisted (e.g. a
+     * MultiSelect's array into a JSON string for a plain TEXT column).
+     * Override per field-type, or attach one ad hoc via dehydrateUsing().
+     */
+    public function dehydrate(mixed $value): mixed
+    {
+        return $this->dehydrateCallback ? ($this->dehydrateCallback)($value) : $value;
+    }
+
+    /**
+     * The inverse of dehydrate(): transforms a stored value back into form
+     * state when a record is loaded for editing.
+     */
+    public function hydrate(mixed $value): mixed
+    {
+        return $this->hydrateCallback ? ($this->hydrateCallback)($value) : $value;
+    }
+
+    public function dehydrateUsing(\Closure $callback): static
+    {
+        $this->dehydrateCallback = $callback;
+
+        return $this;
+    }
+
+    public function hydrateUsing(\Closure $callback): static
+    {
+        $this->hydrateCallback = $callback;
+
+        return $this;
     }
 
     abstract public function renderInput(mixed $value, ?string $error): string;
