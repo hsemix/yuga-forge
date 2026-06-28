@@ -57,9 +57,13 @@ abstract class Resource extends Component
 
     public array $selected = [];
     public bool $showFilters = false;
+
+    #[Url(as: 'filters', history: false)]
     public array $filters = [];
 
     public bool $showColumns = false;
+
+    #[Url(as: 'columns', history: false)]
     public array $hiddenColumns = [];
 
     public bool $showForm = false;
@@ -105,6 +109,22 @@ abstract class Resource extends Component
             $properties['sort']['default'] = $this->defaultSort()
                 ?? $this->firstSortableColumn(static::table(Table::make()))
                 ?? '';
+        }
+
+        // "filters"'s declared static default is [] (an empty array literal,
+        // since a schema-driven property can't declare per-filter defaults
+        // in its property declaration) - the real "untouched" shape is one
+        // entry per filter with that filter's own default, computed in
+        // mount(). Substitute it the same way "sort" already is, so the URL
+        // stays clean when every filter is still at its default.
+        if (isset($properties['filters'])) {
+            $defaults = [];
+
+            foreach (static::table(Table::make())->getFilters() as $filter) {
+                $defaults[$filter->getName()] = $filter->getDefault();
+            }
+
+            $properties['filters']['default'] = $defaults;
         }
 
         return $properties;
