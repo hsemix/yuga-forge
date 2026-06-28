@@ -773,7 +773,7 @@ abstract class Resource extends Component
         $jsKeys = fn (array $keys) => '[' . implode(',', array_map(fn ($key) => "'" . addslashes((string) $key) . "'", $keys)) . ']';
         $allSelected = $pageKeys !== [] && count(array_intersect($pageKeys, $this->selected)) === count($pageKeys);
 
-        $html = '<div class="grid gap-5">';
+        $html = '<div class="grid min-w-0 gap-5">';
 
         $html .= '<header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">';
         $html .= '<div><span class="text-xs font-extrabold uppercase text-azure-600">' . $escape($label) . '</span>';
@@ -785,7 +785,7 @@ abstract class Resource extends Component
 
         $html .= '</header>';
 
-        $html .= '<section class="rounded-lg border border-slate-200 bg-white shadow-lg shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/20">';
+        $html .= '<section class="min-w-0 rounded-lg border border-slate-200 bg-white shadow-lg shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/20">';
         $html .= '<div class="flex flex-col gap-3 border-b border-slate-200 p-4 dark:border-slate-800 md:flex-row md:items-center md:justify-between">';
         $html .= '<div class="flex flex-1 flex-col gap-2.5 sm:flex-row sm:items-center">';
         $html .= '<input class="' . $inputClass . ' sm:w-72" type="search" placeholder="Search" value="' . $escape($this->search) . '" ylc:model="search">';
