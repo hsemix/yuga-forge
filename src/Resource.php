@@ -943,6 +943,33 @@ abstract class Resource extends Component
     }
 
     /**
+     * 'sm'|'md' (default)|'lg'|'xl'|'2xl' - how wide the panel is, whether
+     * it's a slide-over or a modal. A resource with a lot of fields (or
+     * Sections laid out in 2+ columns - those need real width to be worth
+     * it at all) will want something wider than the default.
+     */
+    protected function panelWidth(): string
+    {
+        return 'md';
+    }
+
+    /**
+     * A fixed set of literal classes, not a dynamically built
+     * "max-w-{$size}" string - same Tailwind-literal-scanning reason as
+     * every other size/columns option in Forge.
+     */
+    protected function panelWidthClass(): string
+    {
+        return match ($this->panelWidth()) {
+            'sm' => 'max-w-sm',
+            'lg' => 'max-w-lg',
+            'xl' => 'max-w-xl',
+            '2xl' => 'max-w-2xl',
+            default => 'max-w-md',
+        };
+    }
+
+    /**
      * Wraps $inner (the form or view's own content - heading, fields/dl,
      * buttons) in either slide-over or modal chrome, per panelDisplay().
      * $closeAction is whatever ylc:click target closes it (closeForm() or
@@ -951,17 +978,19 @@ abstract class Resource extends Component
      */
     protected function wrapPanel(string $inner, string $closeAction): string
     {
+        $widthClass = $this->panelWidthClass();
+
         if ($this->panelDisplay() === 'modal') {
             return '<div class="fixed inset-0 z-40 flex items-center justify-center p-4">'
                 . '<div class="absolute inset-0 bg-slate-950/40" ylc:click="' . $closeAction . '"></div>'
-                . '<div class="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-6 shadow-2xl dark:bg-slate-900">'
+                . '<div class="relative max-h-[90vh] w-full ' . $widthClass . ' overflow-y-auto rounded-lg bg-white p-6 shadow-2xl dark:bg-slate-900">'
                 . $inner
                 . '</div></div>';
         }
 
         return '<div class="fixed inset-0 z-40 flex justify-end">'
             . '<div class="absolute inset-0 bg-slate-950/40" ylc:click="' . $closeAction . '"></div>'
-            . '<aside class="relative h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl dark:bg-slate-900">'
+            . '<aside class="relative h-full w-full ' . $widthClass . ' overflow-y-auto bg-white p-6 shadow-2xl dark:bg-slate-900">'
             . $inner
             . '</aside></div>';
     }
