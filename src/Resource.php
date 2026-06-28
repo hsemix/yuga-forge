@@ -7,6 +7,7 @@ use Yuga\Database\Elegant\Association\HasOne;
 use Yuga\Database\Elegant\Model;
 use Yuga\Forge\Authorization\Policy;
 use Yuga\Forge\Authorization\RolePolicy;
+use Yuga\Forge\Relations\RelationManager;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Table;
 use Yuga\Live\Attributes\Url;
@@ -928,7 +929,13 @@ abstract class Resource extends Component
             $html .= '<div><dt class="font-bold text-slate-500 dark:text-slate-400">' . $escape($field->getLabel()) . '</dt><dd class="mt-1 text-slate-950 dark:text-white">' . $field->renderDisplay($value) . '</dd></div>';
         }
 
-        $html .= '</dl>' . $this->renderViewExtra($this->viewing) . '</aside></div>';
+        $html .= '</dl>';
+
+        foreach ($this->relationManagers() as $manager) {
+            $html .= $this->renderRelationManager($manager);
+        }
+
+        $html .= $this->renderViewExtra($this->viewing) . '</aside></div>';
 
         return $html;
     }
@@ -940,6 +947,83 @@ abstract class Resource extends Component
     protected function renderViewExtra(array $record): string
     {
         return '';
+    }
+
+    /**
+     * Related records to show inline in the "Details" view slide-over (a
+     * Customer's Orders, etc.) — Filament calls this a relation manager.
+     * No-op by default; override to declare one or more.
+     *
+     * @return RelationManager[]
+     */
+    protected function relationManagers(): array
+    {
+        return [];
+    }
+
+    /**
+     * Fetches $manager's relation for the record currently being viewed and
+     * renders it as a compact table, reusing each declared Column's own
+     * renderCell() — the same rendering Resource's main table() uses, just
+     * against the related records instead of this resource's own. A
+     * separate, targeted query (model::where(recordKey,key)->with([relation])),
+     * not Resource::$with — that's for the *list* query; eager-loading a
+     * to-many relation there for every row just to support this one
+     * record's view panel would fetch it on every page load for nothing.
+     */
+    protected function renderRelationManager(RelationManager $manager): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $relation = $manager->getRelation();
+        $modelClass = $this->model;
+        $instance = new $modelClass();
+
+        if (!method_exists($instance, $relation)) {
+            return '';
+        }
+
+        $key = $this->viewing[$this->recordKey] ?? null;
+
+        if ($key === null) {
+            return '';
+        }
+
+        $record = $modelClass::where($this->recordKey, $key)->with([$relation])->first();
+        $related = $record ? (array) ($record->toArray()[$relation] ?? []) : [];
+
+        if ($manager->getLimit() !== null) {
+            $related = array_slice($related, 0, $manager->getLimit());
+        }
+
+        $columns = $manager->getColumns();
+
+        $html = '<div class="mt-8"><h3 class="text-xs font-extrabold uppercase text-azure-600">' . $escape($manager->getLabel()) . '</h3>';
+
+        if ($related === []) {
+            return $html . '<p class="mt-2 text-sm text-slate-500 dark:text-slate-400">No records.</p></div>';
+        }
+
+        $html .= '<div class="mt-2 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800"><table class="w-full text-sm"><thead><tr class="bg-slate-50 dark:bg-slate-900">';
+
+        foreach ($columns as $column) {
+            $html .= '<th class="px-3 py-2 text-left text-xs font-bold uppercase text-slate-500 dark:text-slate-400">' . $escape($column->getLabel()) . '</th>';
+        }
+
+        $html .= '</tr></thead><tbody>';
+
+        foreach ($related as $row) {
+            $html .= '<tr class="border-t border-slate-200 dark:border-slate-800">';
+
+            foreach ($columns as $column) {
+                $html .= '<td class="px-3 py-2">' . $column->renderCell($row) . '</td>';
+            }
+
+            $html .= '</tr>';
+        }
+
+        $html .= '</tbody></table></div></div>';
+
+        return $html;
     }
 
     /**
