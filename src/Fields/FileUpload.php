@@ -56,7 +56,7 @@ class FileUpload extends Field
         $accept = $this->accept ? ' accept="' . $escape($this->accept) . '"' : '';
         $multiple = $this->multiple ? ' multiple' : '';
 
-        $input = '<input type="file" class="' . static::inputClass() . '"' . $accept . $multiple . ' ylc:model="' . $this->modelAttr() . '">';
+        $input = '<input type="file" class="h-10 ' . static::inputClass() . '"' . $accept . $multiple . ' ylc:model="' . $this->modelAttr() . '">';
 
         $preview = $this->renderPreview($value);
 

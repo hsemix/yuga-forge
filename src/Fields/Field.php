@@ -150,9 +150,17 @@ abstract class Field
             HTML;
     }
 
+    /**
+     * Deliberately no fixed height here - a single-line input/select needs
+     * h-10, but a multi-line one (Textarea, RichEditor's textarea) needs to
+     * size from its rows attribute instead; a fixed height on those would
+     * silently override it down to one line regardless of rows. Single-line
+     * field types add h-10 themselves (see TextInput/Select/DatePicker/
+     * FileUpload); MultiSelect adds its own min-h instead.
+     */
     protected static function inputClass(): string
     {
-        return 'h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-950 outline-none focus:border-azure-600 focus:ring-4 focus:ring-azure-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-azure-400 dark:focus:ring-azure-500/20';
+        return 'w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-950 outline-none focus:border-azure-600 focus:ring-4 focus:ring-azure-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-azure-400 dark:focus:ring-azure-500/20';
     }
 
     protected function modelAttr(): string

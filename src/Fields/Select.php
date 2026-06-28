@@ -28,6 +28,6 @@ class Select extends Field
             $optionsHtml .= '<option value="' . $escape($optionValue) . '"' . $selected . '>' . $escape($optionLabel) . '</option>';
         }
 
-        return '<select class="' . static::inputClass() . '" ylc:model="' . $this->modelAttr() . '">' . $optionsHtml . '</select>';
+        return '<select class="h-10 ' . static::inputClass() . '" ylc:model="' . $this->modelAttr() . '">' . $optionsHtml . '</select>';
     }
 }

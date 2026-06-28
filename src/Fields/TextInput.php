@@ -32,6 +32,6 @@ class TextInput extends Field
     {
         $escape = fn ($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
 
-        return '<input type="' . $this->type . '" class="' . static::inputClass() . '" value="' . $escape($value) . '" ylc:model="' . $this->modelAttr() . '">';
+        return '<input type="' . $this->type . '" class="h-10 ' . static::inputClass() . '" value="' . $escape($value) . '" ylc:model="' . $this->modelAttr() . '">';
     }
 }
