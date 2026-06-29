@@ -12,6 +12,7 @@ use Yuga\Forge\Relations\RelationManager;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Section;
 use Yuga\Forge\Schema\Table;
+use Yuga\Forge\Schema\Tabs;
 use Yuga\Live\Attributes\Url;
 use Yuga\Live\Component;
 use Yuga\Models\Auth;
@@ -1180,9 +1181,11 @@ abstract class Resource extends Component
         $html .= '<div class="mt-6 grid gap-4">';
 
         foreach ($schema as $item) {
-            $html .= $item instanceof Section
-                ? $this->renderFormSection($item, $errors)
-                : $this->renderFormField($item, $errors);
+            $html .= match (true) {
+                $item instanceof Section => $this->renderFormSection($item, $errors),
+                $item instanceof Tabs => $this->renderFormTabs($item, $errors),
+                default => $this->renderFormField($item, $errors),
+            };
         }
 
         $html .= '<div class="mt-2 flex gap-2"><button type="button" class="h-10 flex-1 rounded-lg bg-azure-600 font-bold text-white hover:bg-azure-700" ylc:click="save">Save</button>';
@@ -1213,6 +1216,49 @@ abstract class Resource extends Component
         $html .= '</div></div>';
 
         return $html;
+    }
+
+    /**
+     * Tab switching is pure client-side (no server round-trip, nothing
+     * about "which tab is open" needs to be remembered) - plain inline
+     * onclick handlers toggling classes/hidden, same no-<script>-tag
+     * constraint as RichEditor/TagsInput (YLC's morph replaces innerHTML,
+     * an injected <script> tag wouldn't execute that way).
+     */
+    protected function renderFormTabs(Tabs $tabs, array $errors): string
+    {
+        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+
+        $switchJs = "var root=this.closest('[data-tabs]');"
+            . "root.querySelectorAll('[data-tab-button]').forEach(function(b){b.classList.remove('border-azure-600','text-azure-600');b.classList.add('border-transparent','text-slate-500');});"
+            . "this.classList.remove('border-transparent','text-slate-500');this.classList.add('border-azure-600','text-azure-600');"
+            . "var idx=this.dataset.tabIndex;"
+            . "root.querySelectorAll('[data-tab-panel]').forEach(function(p){p.classList.toggle('hidden',p.dataset.tabIndex!==idx);});";
+
+        $buttons = '';
+        $panels = '';
+
+        foreach ($tabs->getTabs() as $index => $tab) {
+            $active = $index === 0;
+            $buttonClass = $active
+                ? 'border-azure-600 text-azure-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400';
+
+            $buttons .= '<button type="button" data-tab-button data-tab-index="' . $index . '" class="-mb-px border-b-2 px-3 py-2 text-sm font-bold ' . $buttonClass . '" onclick="' . $escape($switchJs) . '">' . $escape($tab->getLabel()) . '</button>';
+
+            $fieldsHtml = '';
+
+            foreach ($tab->getFields() as $field) {
+                $fieldsHtml .= $this->renderFormField($field, $errors);
+            }
+
+            $panels .= '<div data-tab-panel data-tab-index="' . $index . '" class="grid gap-4 pt-4' . ($active ? '' : ' hidden') . '">' . $fieldsHtml . '</div>';
+        }
+
+        return '<div data-tabs>'
+            . '<div class="flex gap-1 border-b border-slate-200 dark:border-slate-800">' . $buttons . '</div>'
+            . $panels
+            . '</div>';
     }
 
     protected function renderViewSlideOver(array $columns): string
@@ -1250,6 +1296,11 @@ abstract class Resource extends Component
         foreach (static::form(Form::make())->getSchema() as $item) {
             if ($item instanceof Section) {
                 $sectionsHtml .= $this->renderViewSection($item, $shown);
+                continue;
+            }
+
+            if ($item instanceof Tabs) {
+                $sectionsHtml .= $this->renderViewTabs($item, $shown);
                 continue;
             }
 
@@ -1307,6 +1358,40 @@ abstract class Resource extends Component
         $html = '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
         $html .= $this->renderSectionHeading($section);
         $html .= '<dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '">' . $items . '</dl></div>';
+
+        return $html;
+    }
+
+    /**
+     * Details is read-only, so unlike the form there's no interactive tab
+     * switching to wire up - each Tab just renders as its own bordered
+     * block (one per tab, all shown at once), the same treatment Sections
+     * already get here.
+     */
+    protected function renderViewTabs(Tabs $tabs, array $shown): string
+    {
+        $html = '';
+
+        foreach ($tabs->getTabs() as $tab) {
+            $items = '';
+
+            foreach ($tab->getFields() as $field) {
+                if ($field->isHiddenField() || in_array($field->getName(), $shown, true)) {
+                    continue;
+                }
+
+                $value = $this->viewing[$field->getName()] ?? null;
+                $items .= $this->renderViewItem($field->getLabel(), $field->renderDisplay($value));
+            }
+
+            if ($items === '') {
+                continue;
+            }
+
+            $html .= '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
+            $html .= '<h3 class="text-sm font-bold text-slate-950 dark:text-white">' . htmlspecialchars($tab->getLabel(), ENT_QUOTES, 'UTF-8') . '</h3>';
+            $html .= '<dl class="grid gap-4 text-sm">' . $items . '</dl></div>';
+        }
 
         return $html;
     }
