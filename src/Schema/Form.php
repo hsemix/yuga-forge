@@ -25,11 +25,11 @@ class Form
     }
 
     /**
-     * The raw schema as declared - a mix of Fields and Sections, in display
-     * order. Only Resource's own form renderer needs this; everything else
-     * (validation, save(), etc.) wants getFields() instead.
+     * The raw schema as declared - a mix of Fields, Sections and Tabs, in
+     * display order. Only Resource's own form renderer needs this;
+     * everything else (validation, save(), etc.) wants getFields() instead.
      *
-     * @return array<Field|Section>
+     * @return array<Field|Section|Tabs>
      */
     public function getSchema(): array
     {
@@ -37,10 +37,10 @@ class Form
     }
 
     /**
-     * Every Field in the form, flattened through any Sections - so a
+     * Every Field in the form, flattened through any Sections/Tabs - so a
      * consumer that just needs "all the fields" (validation, building the
      * save payload, the "Details" view's field fallback) doesn't need to
-     * know Section exists at all.
+     * know either exists at all.
      *
      * @return Field[]
      */
@@ -51,6 +51,10 @@ class Form
         foreach ($this->schema as $item) {
             if ($item instanceof Section) {
                 array_push($fields, ...$item->getFields());
+            } elseif ($item instanceof Tabs) {
+                foreach ($item->getTabs() as $tab) {
+                    array_push($fields, ...$tab->getFields());
+                }
             } else {
                 $fields[] = $item;
             }
