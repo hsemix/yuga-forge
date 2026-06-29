@@ -31,6 +31,16 @@ abstract class Resource extends Component
     protected array $with = [];
 
     /**
+     * Opt-in: when true, "Delete" soft-deletes (sets the model's deleted_at
+     * column) instead of removing the row, and the list gets a "Trash"
+     * toggle to view/restore/permanently-delete those records. Off by
+     * default - Elegant's own delete() defaults to soft-delete and will
+     * silently ALTER TABLE to add deleted_at if it's missing, never what a
+     * plain "Delete" button should do for a resource that hasn't opted in.
+     */
+    protected bool $softDeletes = false;
+
+    /**
      * @var class-string<Policy>|null Explicit override for the policy class.
      *      Leave null to auto-resolve App\Models\X -> App\Policies\XPolicy
      *      (see resolvePolicyClass()); if neither is set/exists, every
@@ -61,6 +71,7 @@ abstract class Resource extends Component
 
     public array $selected = [];
     public bool $showFilters = false;
+    public bool $showTrash = false;
 
     #[Url(as: 'filters', history: false)]
     public array $filters = [];
@@ -289,6 +300,13 @@ abstract class Resource extends Component
     public function toggleFilters(): void
     {
         $this->showFilters = !$this->showFilters;
+    }
+
+    public function toggleTrash(): void
+    {
+        $this->showTrash = !$this->showTrash;
+        $this->page = 1;
+        $this->selected = [];
     }
 
     public function addRepeaterRow(string $field): void
@@ -563,10 +581,13 @@ abstract class Resource extends Component
         // delete(true) = permanent. Elegant's default delete() is a *soft*
         // delete, and if the table has no deleted_at column it will silently
         // ALTER TABLE to add one rather than removing the row — never what a
-        // "Delete" confirm button here means.
-        ($this->model)::where($this->recordKey, $key)->delete(true);
+        // plain "Delete" confirm button means for a resource that hasn't
+        // opted into $softDeletes. Resources that have opted in get the
+        // real soft delete instead, so the record lands in the trash view
+        // rather than disappearing outright.
+        ($this->model)::where($this->recordKey, $key)->delete(!$this->softDeletes);
         $this->selected = array_values(array_diff($this->selected, [$key]));
-        $this->toast('Record deleted.');
+        $this->toast($this->softDeletes ? 'Record moved to trash.' : 'Record deleted.');
 
         // The record this page was dedicated to no longer exists - nothing
         // left to render here, so leave for the list instead.
@@ -590,11 +611,100 @@ abstract class Resource extends Component
                 continue;
             }
 
+            ($this->model)::where($this->recordKey, $key)->delete(!$this->softDeletes);
+            $deleted++;
+        }
+
+        $this->toast($deleted . ($this->softDeletes ? ' record(s) moved to trash.' : ' record(s) deleted.'));
+        $this->selected = [];
+    }
+
+    /**
+     * Trash-view-only actions - undo a soft delete, or actually remove the
+     * row for good. Both no-op (silently) if $softDeletes isn't enabled,
+     * same defensive stance as every other action here: a stray click from
+     * a stale/cached UI shouldn't do something a resource didn't opt into.
+     */
+    public function restoreOne(string $key): void
+    {
+        if (!$this->softDeletes) {
+            return;
+        }
+
+        $record = $this->findRecord($key);
+
+        if (!$record || !$this->can('update', $record)) {
+            return;
+        }
+
+        $deleteKey = (new ($this->model)())->getDeleteKey();
+
+        ($this->model)::where($this->recordKey, $key)->update([$deleteKey => null]);
+        $this->selected = array_values(array_diff($this->selected, [$key]));
+        $this->toast('Record restored.');
+    }
+
+    public function bulkRestore(): void
+    {
+        if (!$this->softDeletes || empty($this->selected)) {
+            return;
+        }
+
+        $deleteKey = (new ($this->model)())->getDeleteKey();
+        $restored = 0;
+
+        foreach ($this->selected as $key) {
+            $record = $this->findRecord($key);
+
+            if (!$record || !$this->can('update', $record)) {
+                continue;
+            }
+
+            ($this->model)::where($this->recordKey, $key)->update([$deleteKey => null]);
+            $restored++;
+        }
+
+        $this->toast($restored . ' record(s) restored.');
+        $this->selected = [];
+    }
+
+    public function forceDeleteOne(string $key): void
+    {
+        if (!$this->softDeletes) {
+            return;
+        }
+
+        $record = $this->findRecord($key);
+
+        if (!$record || !$this->can('delete', $record)) {
+            return;
+        }
+
+        ($this->model)::where($this->recordKey, $key)->delete(true);
+        $this->selected = array_values(array_diff($this->selected, [$key]));
+        $this->toast('Record permanently deleted.');
+    }
+
+    public function bulkForceDelete(): void
+    {
+        if (!$this->softDeletes || empty($this->selected)) {
+            return;
+        }
+
+        $deleted = 0;
+
+        foreach ($this->selected as $key) {
+            $record = $this->findRecord($key);
+
+            if (!$record || !$this->can('delete', $record)) {
+                continue;
+            }
+
             ($this->model)::where($this->recordKey, $key)->delete(true);
             $deleted++;
         }
 
-        $this->toast($deleted . ' record(s) deleted.');
+        $this->toast($deleted . ' record(s) permanently deleted.');
         $this->selected = [];
     }
 
@@ -684,6 +794,17 @@ abstract class Resource extends Component
 
         if ($this->with !== []) {
             $query->with($this->with);
+        }
+
+        // Elegant's own trashed-row filtering (Builder::deletable()) only
+        // ever applies a NOT NULL filter when onlyTrashed() was explicitly
+        // called - it has no default "exclude trashed unless told
+        // otherwise" behavior, so a soft-deleted row would otherwise still
+        // show up in the regular list. Filtered explicitly here instead of
+        // relying on that.
+        if ($this->softDeletes) {
+            $deleteColumn = $instance->getTable() . '.' . $instance->getDeleteKey();
+            $this->showTrash ? $query->whereNotNull($deleteColumn) : $query->whereNull($deleteColumn);
         }
 
         return $query;
@@ -1088,7 +1209,7 @@ abstract class Resource extends Component
         $html .= '<div><span class="text-xs font-extrabold uppercase text-azure-600">' . $escape($label) . '</span>';
         $html .= '<h1 class="mt-1 text-3xl font-bold leading-tight text-slate-950 dark:text-white">' . $escape($label) . '</h1></div>';
 
-        if ($this->isCreatable()) {
+        if ($this->isCreatable() && !$this->showTrash) {
             $html .= '<button type="button" class="h-10 rounded-lg bg-azure-600 px-4 font-bold text-white shadow-sm hover:bg-azure-700" ylc:click="openCreate">+ New</button>';
         }
 
@@ -1105,6 +1226,10 @@ abstract class Resource extends Component
 
         if ($toggleableColumns !== []) {
             $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="toggleColumns">' . ($this->showColumns ? 'Hide columns' : 'Columns') . '</button>';
+        }
+
+        if ($this->softDeletes) {
+            $html .= '<button type="button" class="' . $buttonClass . '" ylc:click="toggleTrash">' . ($this->showTrash ? 'Back to list' : 'Trash') . '</button>';
         }
 
         $html .= '</div>';
@@ -1583,6 +1708,20 @@ abstract class Resource extends Component
         $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
         $html = '';
 
+        // Trashed records get their own action set - editing/viewing a
+        // soft-deleted row in place doesn't make sense; restore it first.
+        if ($this->softDeletes && $this->showTrash) {
+            if ($this->can('update', $record)) {
+                $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="restoreOne(\'' . $escape($key) . '\')">Restore</button> ';
+            }
+
+            if ($this->can('delete', $record)) {
+                $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Permanently delete this record? This cannot be undone." ylc:click="forceDeleteOne(\'' . $escape($key) . '\')">Delete permanently</button>';
+            }
+
+            return $html;
+        }
+
         if ($this->can('view', $record)) {
             $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
         }
@@ -1592,7 +1731,8 @@ abstract class Resource extends Component
         }
 
         if ($this->can('delete', $record)) {
-            $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Delete this record? This cannot be undone." ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
+            $confirm = $this->softDeletes ? 'Move this record to trash?' : 'Delete this record? This cannot be undone.';
+            $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="' . $escape($confirm) . '" ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
         }
 
         return $html;
@@ -1608,7 +1748,16 @@ abstract class Resource extends Component
             return '';
         }
 
-        return '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkDelete">Delete</button>';
+        if ($this->softDeletes && $this->showTrash) {
+            return '<button type="button" class="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900" ylc:click="bulkRestore">Restore</button> '
+                . '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Permanently delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkForceDelete">Delete permanently</button>';
+        }
+
+        $confirm = $this->softDeletes
+            ? 'Move ' . $count . ' selected record(s) to trash?'
+            : 'Delete ' . $count . ' selected record(s)? This cannot be undone.';
+
+        return '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="' . htmlspecialchars($confirm, ENT_QUOTES, 'UTF-8') . '" ylc:click="bulkDelete">Delete</button>';
     }
 
     /**
