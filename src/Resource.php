@@ -8,6 +8,7 @@ use Yuga\Database\Elegant\Model;
 use Yuga\Forge\Authorization\Policy;
 use Yuga\Forge\Authorization\RolePolicy;
 use Yuga\Forge\Fields\Field;
+use Yuga\Forge\Fields\Repeater;
 use Yuga\Forge\Relations\RelationManager;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Section;
@@ -288,6 +289,41 @@ abstract class Resource extends Component
     public function toggleFilters(): void
     {
         $this->showFilters = !$this->showFilters;
+    }
+
+    public function addRepeaterRow(string $field): void
+    {
+        if (!is_array($this->data[$field] ?? null)) {
+            $this->data[$field] = [];
+        }
+
+        $this->data[$field][] = $this->repeaterRowDefaults($field);
+    }
+
+    public function removeRepeaterRow(string $field, int $index): void
+    {
+        if (!is_array($this->data[$field] ?? null)) {
+            return;
+        }
+
+        array_splice($this->data[$field], $index, 1);
+    }
+
+    protected function repeaterRowDefaults(string $fieldName): array
+    {
+        foreach (static::form(Form::make())->getFields() as $field) {
+            if ($field instanceof Repeater && $field->getName() === $fieldName) {
+                $row = [];
+
+                foreach ($field->getFields() as $subField) {
+                    $row[$subField->getName()] = $subField->getDefault();
+                }
+
+                return $row;
+            }
+        }
+
+        return [];
     }
 
     public function clearFilters(): void

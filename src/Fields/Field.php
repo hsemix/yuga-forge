@@ -11,6 +11,7 @@ abstract class Field
     protected ?\Closure $dehydrateCallback = null;
     protected ?\Closure $hydrateCallback = null;
     protected ?\Closure $visibleCallback = null;
+    protected ?string $modelPrefix = null;
 
     public static function make(string $name): static
     {
@@ -210,8 +211,22 @@ abstract class Field
         return 'w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-950 outline-none focus:border-azure-600 focus:ring-4 focus:ring-azure-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-azure-400 dark:focus:ring-azure-500/20';
     }
 
+    /**
+     * Lets a container field (Repeater) render a sub-field's input bound to
+     * a nested per-row path (e.g. "data.variants.0.label") instead of its
+     * own top-level "data.{name}" - Resource's array-bucket dot-path
+     * handling (setPublicState()) already walks arbitrarily deep through
+     * plain arrays, so no further framework change is needed for this.
+     */
+    public function withModelPrefix(string $prefix): static
+    {
+        $this->modelPrefix = $prefix;
+
+        return $this;
+    }
+
     protected function modelAttr(): string
     {
-        return 'data.' . $this->getName();
+        return ($this->modelPrefix ?? 'data') . '.' . $this->getName();
     }
 }
