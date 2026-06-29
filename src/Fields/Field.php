@@ -10,6 +10,7 @@ abstract class Field
     protected mixed $default = null;
     protected ?\Closure $dehydrateCallback = null;
     protected ?\Closure $hydrateCallback = null;
+    protected ?\Closure $visibleCallback = null;
 
     public static function make(string $name): static
     {
@@ -139,6 +140,41 @@ abstract class Field
     public function isHiddenField(): bool
     {
         return false;
+    }
+
+    /**
+     * Conditionally show this field based on the rest of the form's
+     * current state, e.g. Radio::make('referral_source')->options([...]),
+     * TextInput::make('referral_detail')->visible(fn ($data) =>
+     * ($data['referral_source'] ?? null) === 'other'). The callback
+     * receives the form's full $data array (not just this field's value).
+     * Every input already triggers a full server round-trip + morph
+     * (debounced ylc:model), so re-evaluating this on each render is all
+     * that's needed - no client-side wiring required.
+     */
+    public function visible(\Closure $callback): static
+    {
+        $this->visibleCallback = $callback;
+
+        return $this;
+    }
+
+    /** The inverse of visible() - shows the field when the callback returns false. */
+    public function hidden(\Closure $callback): static
+    {
+        $this->visibleCallback = fn (array $data) => !$callback($data);
+
+        return $this;
+    }
+
+    /**
+     * Whether this field should render/validate/save given the form's
+     * current $data. Defaults to true - only fields that called visible()
+     * or hidden() are conditional at all.
+     */
+    public function isVisible(array $data): bool
+    {
+        return $this->visibleCallback === null ? true : (bool) ($this->visibleCallback)($data);
     }
 
     abstract public function renderInput(mixed $value, ?string $error): string;

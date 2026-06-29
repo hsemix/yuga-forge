@@ -437,6 +437,10 @@ abstract class Resource extends Component
         $fields = static::form(Form::make())->getFields();
 
         foreach ($fields as $field) {
+            if (!$field->isVisible($this->data)) {
+                continue;
+            }
+
             $value = $this->data[$field->getName()] ?? null;
 
             foreach ($field->getRules() as $rule) {
@@ -1197,6 +1201,10 @@ abstract class Resource extends Component
 
     protected function renderFormField(Field $field, array $errors): string
     {
+        if (!$field->isVisible($this->data)) {
+            return '';
+        }
+
         $value = $this->data[$field->getName()] ?? $field->getDefault();
         $error = $errors[$field->getName()][0] ?? null;
 
@@ -1304,7 +1312,7 @@ abstract class Resource extends Component
                 continue;
             }
 
-            if ($item->isHiddenField() || in_array($item->getName(), $shown, true)) {
+            if ($item->isHiddenField() || in_array($item->getName(), $shown, true) || !$item->isVisible($this->viewing)) {
                 continue;
             }
 
@@ -1343,7 +1351,7 @@ abstract class Resource extends Component
         $items = '';
 
         foreach ($section->getFields() as $field) {
-            if ($field->isHiddenField() || in_array($field->getName(), $shown, true)) {
+            if ($field->isHiddenField() || in_array($field->getName(), $shown, true) || !$field->isVisible($this->viewing)) {
                 continue;
             }
 
@@ -1376,7 +1384,7 @@ abstract class Resource extends Component
             $items = '';
 
             foreach ($tab->getFields() as $field) {
-                if ($field->isHiddenField() || in_array($field->getName(), $shown, true)) {
+                if ($field->isHiddenField() || in_array($field->getName(), $shown, true) || !$field->isVisible($this->viewing)) {
                     continue;
                 }
 
