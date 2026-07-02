@@ -5,10 +5,12 @@ namespace Yuga\Forge;
 use Yuga\Database\Elegant\Association\BelongsTo;
 use Yuga\Database\Elegant\Association\HasOne;
 use Yuga\Database\Elegant\Model;
+use Yuga\Forge\Actions\Action;
 use Yuga\Forge\Authorization\Policy;
 use Yuga\Forge\Authorization\RolePolicy;
 use Yuga\Forge\Fields\Field;
 use Yuga\Forge\Fields\Repeater;
+use Yuga\Forge\Fields\Select;
 use Yuga\Forge\Relations\RelationManager;
 use Yuga\Forge\Schema\Form;
 use Yuga\Forge\Schema\Section;
@@ -52,7 +54,7 @@ abstract class Resource extends Component
     protected bool $policyResolved = false;
 
     /** @var string[] public array properties that accept dotted ylc:model bindings, e.g. "data.name" */
-    protected array $arrayBuckets = ['data', 'filters'];
+    protected array $arrayBuckets = ['data', 'filters', 'relationSearch'];
 
     #[Url(as: 'search', history: false)]
     public string $search = '';
@@ -84,6 +86,9 @@ abstract class Resource extends Component
     public bool $showForm = false;
     public ?string $editingKey = null;
     public array $data = [];
+
+    /** In-flight search text per relationship-Select field name, e.g. ['customer_id' => 'jo']. */
+    public array $relationSearch = [];
 
     public bool $showView = false;
     public ?array $viewing = null;
@@ -466,6 +471,7 @@ abstract class Resource extends Component
     {
         $this->editingKey = null;
         $this->data = [];
+        $this->relationSearch = [];
 
         foreach (static::form(Form::make())->getFields() as $field) {
             $this->data[$field->getName()] = $field->getDefault();
@@ -871,6 +877,105 @@ abstract class Resource extends Component
         ];
     }
 
+    /**
+     * A narrower sibling to relationJoin() for Select::relationship()'s
+     * live search - just the related model class/table, not full JOIN
+     * metadata (relationJoin() also needs foreignKey/otherKey for an ON
+     * clause, a different shape; left untouched rather than reused here).
+     *
+     * @return array{class: class-string<Model>, table: string}|null
+     */
+    protected function resolveRelatedModel(Model $instance, string $relation): ?array
+    {
+        if (!method_exists($instance, $relation)) {
+            return null;
+        }
+
+        $association = $instance->$relation();
+
+        if (!$association instanceof BelongsTo && !$association instanceof HasOne) {
+            return null;
+        }
+
+        $reflection = new \ReflectionObject($association);
+        $prop = $reflection->getProperty('child');
+        $prop->setAccessible(true);
+        $related = $prop->getValue($association);
+
+        return ['class' => get_class($related), 'table' => $related->getTable()];
+    }
+
+    /**
+     * Up to $field->getSearchLimit() rows from the related table whose
+     * title column LIKE %query%, for a relationship Select's combobox.
+     * Empty query returns the first N rows unfiltered, so the dropdown
+     * shows something on open rather than staying blank until typing
+     * starts.
+     *
+     * @return array<int, array{id: mixed, label: string}>
+     */
+    protected function relationSearchResults(Select $field): array
+    {
+        $instance = new ($this->model)();
+        $resolved = $this->resolveRelatedModel($instance, $field->getRelation());
+
+        if ($resolved === null) {
+            return [];
+        }
+
+        $modelClass = $resolved['class'];
+        $titleColumn = $field->getTitleColumn();
+        $term = trim($this->relationSearch[$field->getName()] ?? '');
+
+        $query = $term !== ''
+            ? $modelClass::where($titleColumn, 'like', '%' . $term . '%')
+            : $modelClass::limit($field->getSearchLimit());
+
+        $rows = $query->limit($field->getSearchLimit())->get()->toArray();
+        $primaryKey = (new $modelClass())->getPrimaryKey();
+
+        return array_map(
+            fn (array $row) => ['id' => $row[$primaryKey], 'label' => (string) $row[$titleColumn]],
+            $rows
+        );
+    }
+
+    /**
+     * Resolves a relationship Select's currently-stored FK value back to
+     * its display label - for showing "Asha Patel" instead of a raw id,
+     * both in edit mode on first render and right after a selection.
+     */
+    protected function relationRecordLabel(Select $field, mixed $id): ?string
+    {
+        if ($id === null || $id === '') {
+            return null;
+        }
+
+        $instance = new ($this->model)();
+        $resolved = $this->resolveRelatedModel($instance, $field->getRelation());
+
+        if ($resolved === null) {
+            return null;
+        }
+
+        $modelClass = $resolved['class'];
+        $related = new $modelClass();
+        $row = $modelClass::where($related->getPrimaryKey(), $id)->first()?->toArray();
+
+        return $row ? (string) $row[$field->getTitleColumn()] : null;
+    }
+
+    /**
+     * The relationship Select's "pick this one" action - clears that
+     * field's in-flight search text so the resolved label shows again
+     * immediately instead of the stale query.
+     */
+    public function selectRelationOption(string $field, string $id): void
+    {
+        $this->data[$field] = $id;
+        unset($this->relationSearch[$field]);
+    }
+
     protected function findRecord(string $key): ?array
     {
         $modelClass = $this->model;
@@ -976,7 +1081,7 @@ abstract class Resource extends Component
      */
     public function listUrl(): string
     {
-        return '/admin/' . strtolower(str_replace(' ', '-', $this->label()));
+        return host('admin/' . strtolower(str_replace(' ', '-', $this->label())));
     }
 
     /**
@@ -1209,9 +1314,15 @@ abstract class Resource extends Component
         $html .= '<div><span class="text-xs font-extrabold uppercase text-azure-600">' . $escape($label) . '</span>';
         $html .= '<h1 class="mt-1 text-3xl font-bold leading-tight text-slate-950 dark:text-white">' . $escape($label) . '</h1></div>';
 
+        $html .= '<div class="flex flex-wrap items-center gap-2">';
+
         if ($this->isCreatable() && !$this->showTrash) {
-            $html .= '<button type="button" class="h-10 rounded-lg bg-azure-600 px-4 font-bold text-white shadow-sm hover:bg-azure-700" ylc:click="openCreate">+ New</button>';
+            $html .= '<button type="button" class="h-10 rounded-lg bg-azure-600 px-4 font-bold text-white shadow-sm hover:bg-azure-700" ylc:click="openCreate">+ New</button> ';
         }
+
+        $html .= $this->renderHeaderActions();
+
+        $html .= '</div>';
 
         $html .= '</header>';
 
@@ -1238,7 +1349,7 @@ abstract class Resource extends Component
             $count = count($this->selected);
             $html .= '<div class="flex items-center gap-2 rounded-lg bg-azure-50 px-3 py-2 text-sm font-bold text-azure-700 dark:bg-azure-500/10 dark:text-azure-200">';
             $html .= '<span>' . $count . ' selected</span>';
-            $html .= $this->bulkActions($count);
+            $html .= $this->renderBulkActions($count);
             $html .= '<button type="button" class="text-azure-600 hover:underline" ylc:click="clearSelection">Clear</button>';
             $html .= '</div>';
         }
@@ -1290,7 +1401,7 @@ abstract class Resource extends Component
                     $html .= '<td class="border-t border-slate-200 px-5 py-3 dark:border-slate-800">' . $column->renderCell($record) . '</td>';
                 }
 
-                $html .= '<td class="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800">' . $this->rowActions($key, $record) . '</td></tr>';
+                $html .= '<td class="border-t border-slate-200 px-5 py-3 text-right dark:border-slate-800">' . $this->renderRowActions($key, $record) . '</td></tr>';
             }
         } else {
             $colspan = count($visibleColumns) + 2;
@@ -1331,6 +1442,17 @@ abstract class Resource extends Component
     }
 
     /**
+     * The form panel's heading - override for something like
+     * "Edit {$this->data['name']}" instead of the generic Edit/New. The
+     * record itself isn't loaded as a model here, only $this->data (already
+     * populated by openEdit()/openCreate() by the time this renders).
+     */
+    protected function formTitle(): string
+    {
+        return $this->editingKey ? 'Edit' : 'New';
+    }
+
+    /**
      * The form's own content - heading, fields/sections, save/cancel - with
      * no opinion about what wraps it. Shared by the slide-over/modal chrome
      * (wrapPanel()) and the dedicated full-page mode (renderFormPage()).
@@ -1341,7 +1463,7 @@ abstract class Resource extends Component
         $schema = static::form(Form::make())->getSchema();
         $errors = $this->getErrors();
 
-        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">' . ($this->editingKey ? 'Edit' : 'New') . '</h2>';
+        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">' . htmlspecialchars($this->formTitle(), ENT_QUOTES, 'UTF-8') . '</h2>';
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeForm">&#10005;</button></div>';
         $html .= '<div class="mt-6 grid gap-4">';
 
@@ -1369,14 +1491,87 @@ abstract class Resource extends Component
         $value = $this->data[$field->getName()] ?? $field->getDefault();
         $error = $errors[$field->getName()][0] ?? null;
 
+        if ($field instanceof Select && $field->isRelationship()) {
+            return $this->renderRelationSelectField($field, $value, $error);
+        }
+
         return $field->render($value, $error);
+    }
+
+    /**
+     * Field::render() normally owns this <label> shell - duplicated here
+     * rather than reused because the combobox markup itself needs DB
+     * access (search results, resolved label) that only Resource has,
+     * unlike every other field whose renderInput() is fully self-contained.
+     */
+    protected function renderRelationSelectField(Select $field, mixed $value, ?string $error): string
+    {
+        $escape = fn ($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+        $label = $escape($field->getLabel());
+        $input = $this->renderRelationCombobox($field, $value);
+        $errorHtml = $error ? '<small class="font-medium text-red-600">' . $escape($error) . '</small>' : '';
+
+        return <<<HTML
+            <label class="grid gap-1.5">
+                <span class="text-sm font-bold text-slate-700 dark:text-slate-200">{$label}</span>
+                {$input}
+                {$errorHtml}
+            </label>
+            HTML;
+    }
+
+    protected function renderRelationCombobox(Select $field, mixed $value): string
+    {
+        $escape = fn ($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+        $name = $field->getName();
+        $searchText = $this->relationSearch[$name] ?? '';
+        $displayValue = $searchText !== '' ? $searchText : ($this->relationRecordLabel($field, $value) ?? '');
+        $results = $this->relationSearchResults($field);
+
+        $resultsHtml = '';
+
+        foreach ($results as $result) {
+            $resultsHtml .= '<button type="button" class="block w-full px-3 py-2 text-left text-sm hover:bg-azure-50 dark:hover:bg-azure-500/10"'
+                . ' ys-on:click="close()"'
+                . ' ylc:click="selectRelationOption(\'' . addslashes($name) . '\', \'' . addslashes((string) $result['id']) . '\')">'
+                . $escape($result['label']) . '</button>';
+        }
+
+        if ($results === []) {
+            $resultsHtml = '<div class="px-3 py-2 text-sm text-slate-400">No results</div>';
+        }
+
+        // data-server-value tells morph.js to honour the server's
+        // value= attribute instead of preserving whatever the user
+        // previously typed - only when search text is blank (fresh open
+        // or just after a selection cleared the search term), since THEN
+        // the server's resolved label is what should show. When the user
+        // IS actively typing ($searchText !== ''), the normal input-
+        // preservation behaviour should apply so typing isn't reset.
+        $serverValueAttr = $searchText === '' ? ' data-server-value' : '';
+
+        return '<div ys-component="headless-combobox" class="relative" ys-on:click.outside="close()">'
+            . '<input type="text" class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-950 outline-none focus:border-azure-600 focus:ring-4 focus:ring-azure-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-azure-400 dark:focus:ring-azure-500/20"'
+            . ' value="' . $escape($displayValue) . '"'
+            . $serverValueAttr
+            . ' ylc:model="relationSearch.' . $escape($name) . '"'
+            . ' ys-on:click="show()">'
+            . '<input type="hidden" value="' . $escape((string) $value) . '" data-server-value ylc:model="data.' . $escape($name) . '">'
+            . '<div class="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900" ys-show="open">'
+            . $resultsHtml
+            . '</div></div>';
     }
 
     protected function renderFormSection(Section $section, array $errors): string
     {
-        $html = '<div class="grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
-        $html .= $this->renderSectionHeading($section);
-        $html .= '<div class="grid gap-4 ' . $this->sectionGridClass($section->getColumns()) . '">';
+        $collapsible = $section->isCollapsible() && $section->getHeading() !== null;
+        $disclosureAttrs = $collapsible
+            ? ' ys-component="headless-disclosure" ys-props="{ defaultOpen: ' . ($section->isCollapsed() ? 'false' : 'true') . ' }"'
+            : '';
+
+        $html = '<div class="grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800"' . $disclosureAttrs . '>';
+        $html .= $this->renderSectionHeading($section, $collapsible);
+        $html .= '<div class="grid gap-4 ' . $this->sectionGridClass($section->getColumns()) . '"' . ($collapsible ? ' ys-show="open"' : '') . '>';
 
         foreach ($section->getFields() as $field) {
             $html .= $this->renderFormField($field, $errors);
@@ -1388,32 +1583,24 @@ abstract class Resource extends Component
     }
 
     /**
-     * Tab switching is pure client-side (no server round-trip, nothing
-     * about "which tab is open" needs to be remembered) - plain inline
-     * onclick handlers toggling classes/hidden, same no-<script>-tag
-     * constraint as RichEditor/TagsInput (YLC's morph replaces innerHTML,
-     * an injected <script> tag wouldn't execute that way).
+     * Tab switching is pure client-side - delegated to YS's "headless-tabs"
+     * component (YS.use(YS.headless) in the admin layout) instead of
+     * hand-rolled onclick/classList JS. YS keeps the component's scope
+     * (__ysScope) on the DOM node itself and skips re-initializing it on
+     * morph (__ysInitialized guard), so "which tab is open" survives a
+     * YLC re-render with no preserve/restore step needed on either side.
      */
     protected function renderFormTabs(Tabs $tabs, array $errors): string
     {
         $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 
-        $switchJs = "var root=this.closest('[data-tabs]');"
-            . "root.querySelectorAll('[data-tab-button]').forEach(function(b){b.classList.remove('border-azure-600','text-azure-600');b.classList.add('border-transparent','text-slate-500');});"
-            . "this.classList.remove('border-transparent','text-slate-500');this.classList.add('border-azure-600','text-azure-600');"
-            . "var idx=this.dataset.tabIndex;"
-            . "root.querySelectorAll('[data-tab-panel]').forEach(function(p){p.classList.toggle('hidden',p.dataset.tabIndex!==idx);});";
-
         $buttons = '';
         $panels = '';
 
         foreach ($tabs->getTabs() as $index => $tab) {
-            $active = $index === 0;
-            $buttonClass = $active
-                ? 'border-azure-600 text-azure-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400';
+            $buttonClass = "{ 'border-azure-600 text-azure-600': isSelected({$index}), 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400': !isSelected({$index}) }";
 
-            $buttons .= '<button type="button" data-tab-button data-tab-index="' . $index . '" class="-mb-px border-b-2 px-3 py-2 text-sm font-bold ' . $buttonClass . '" onclick="' . $escape($switchJs) . '">' . $escape($tab->getLabel()) . '</button>';
+            $buttons .= '<button type="button" ys-on:click="select(' . $index . ')" ys-class="' . $escape($buttonClass) . '" class="-mb-px border-b-2 px-3 py-2 text-sm font-bold">' . $escape($tab->getLabel()) . '</button>';
 
             $fieldsHtml = '';
 
@@ -1421,10 +1608,10 @@ abstract class Resource extends Component
                 $fieldsHtml .= $this->renderFormField($field, $errors);
             }
 
-            $panels .= '<div data-tab-panel data-tab-index="' . $index . '" class="grid gap-4 pt-4' . ($active ? '' : ' hidden') . '">' . $fieldsHtml . '</div>';
+            $panels .= '<div ys-show="isSelected(' . $index . ')" class="grid gap-4 pt-4">' . $fieldsHtml . '</div>';
         }
 
-        return '<div data-tabs>'
+        return '<div ys-component="headless-tabs" ys-props="{ defaultValue: 0 }">'
             . '<div class="flex gap-1 border-b border-slate-200 dark:border-slate-800">' . $buttons . '</div>'
             . $panels
             . '</div>';
@@ -1436,6 +1623,17 @@ abstract class Resource extends Component
     }
 
     /**
+     * The "Details" view panel's heading - override for something like
+     * "{$this->viewing['name']}" instead of the generic "Details".
+     * $this->viewing holds the raw record by the time this renders
+     * (populated by openView()).
+     */
+    protected function viewTitle(): string
+    {
+        return 'Details';
+    }
+
+    /**
      * The "Details" view's own content - heading, field/column list,
      * sections, relation managers, the renderViewExtra() hook - with no
      * opinion about what wraps it. Shared by the slide-over/modal chrome
@@ -1443,7 +1641,7 @@ abstract class Resource extends Component
      */
     protected function renderViewContent(array $columns): string
     {
-        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">Details</h2>';
+        $html = '<div class="flex items-center justify-between"><h2 class="text-lg font-bold text-slate-950 dark:text-white">' . htmlspecialchars($this->viewTitle(), ENT_QUOTES, 'UTF-8') . '</h2>';
         $html .= '<button type="button" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" ylc:click="closeView">&#10005;</button></div>';
         $html .= '<dl class="mt-6 grid gap-4 text-sm">';
 
@@ -1478,7 +1676,7 @@ abstract class Resource extends Component
             }
 
             $value = $this->viewing[$item->getName()] ?? null;
-            $html .= $this->renderViewItem($item->getLabel(), $item->renderDisplay($value));
+            $html .= $this->renderViewItem($item->getLabel(), $this->renderFieldDisplay($item, $value));
         }
 
         $html .= '</dl>' . $sectionsHtml;
@@ -1500,6 +1698,24 @@ abstract class Resource extends Component
     }
 
     /**
+     * Field::renderDisplay()'s relationship-aware counterpart - a
+     * relationship Select has no $options map to look up against, so its
+     * raw FK value needs resolving back to a label via DB access Field
+     * doesn't have. Every "Details" view field-list loop should call this
+     * instead of $field->renderDisplay($value) directly.
+     */
+    protected function renderFieldDisplay(Field $field, mixed $value): string
+    {
+        if ($field instanceof Select && $field->isRelationship()) {
+            $label = $this->relationRecordLabel($field, $value);
+
+            return $label === null ? '&mdash;' : htmlspecialchars($label, ENT_QUOTES, 'UTF-8');
+        }
+
+        return $field->renderDisplay($value);
+    }
+
+    /**
      * Renders one Section as its own bordered block in the "Details" view -
      * the read-only counterpart to renderFormSection(). $shown is the set of
      * field names already covered by a table column (skipped here too, same
@@ -1517,16 +1733,21 @@ abstract class Resource extends Component
             }
 
             $value = $this->viewing[$field->getName()] ?? null;
-            $items .= $this->renderViewItem($field->getLabel(), $field->renderDisplay($value));
+            $items .= $this->renderViewItem($field->getLabel(), $this->renderFieldDisplay($field, $value));
         }
 
         if ($items === '') {
             return '';
         }
 
-        $html = '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">';
-        $html .= $this->renderSectionHeading($section);
-        $html .= '<dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '">' . $items . '</dl></div>';
+        $collapsible = $section->isCollapsible() && $section->getHeading() !== null;
+        $disclosureAttrs = $collapsible
+            ? ' ys-component="headless-disclosure" ys-props="{ defaultOpen: ' . ($section->isCollapsed() ? 'false' : 'true') . ' }"'
+            : '';
+
+        $html = '<div class="mt-2 grid gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800"' . $disclosureAttrs . '>';
+        $html .= $this->renderSectionHeading($section, $collapsible);
+        $html .= '<dl class="grid gap-4 text-sm ' . $this->sectionGridClass($section->getColumns()) . '"' . ($collapsible ? ' ys-show="open"' : '') . '>' . $items . '</dl></div>';
 
         return $html;
     }
@@ -1550,7 +1771,7 @@ abstract class Resource extends Component
                 }
 
                 $value = $this->viewing[$field->getName()] ?? null;
-                $items .= $this->renderViewItem($field->getLabel(), $field->renderDisplay($value));
+                $items .= $this->renderViewItem($field->getLabel(), $this->renderFieldDisplay($field, $value));
             }
 
             if ($items === '') {
@@ -1572,7 +1793,12 @@ abstract class Resource extends Component
      * renders '' when there's nothing to show rather than an empty heading
      * wrapper.
      */
-    protected function renderSectionHeading(Section $section): string
+    /**
+     * $collapsible is resolved by the caller (Section::isCollapsible() AND
+     * a heading actually being set - nothing to click otherwise), not
+     * re-checked here, so this only ever has to decide how to render.
+     */
+    protected function renderSectionHeading(Section $section, bool $collapsible = false): string
     {
         $heading = $section->getHeading();
         $description = $section->getDescription();
@@ -1582,17 +1808,26 @@ abstract class Resource extends Component
         }
 
         $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
-        $html = '<div>';
+        $inner = '<div>';
 
         if ($heading !== null) {
-            $html .= '<h3 class="font-bold text-slate-950 dark:text-white">' . $escape($heading) . '</h3>';
+            $inner .= '<h3 class="font-bold text-slate-950 dark:text-white">' . $escape($heading) . '</h3>';
         }
 
         if ($description !== null) {
-            $html .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($description) . '</p>';
+            $inner .= '<p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">' . $escape($description) . '</p>';
         }
 
-        return $html . '</div>';
+        $inner .= '</div>';
+
+        if (!$collapsible) {
+            return $inner;
+        }
+
+        return '<button type="button" class="flex w-full items-center justify-between gap-3 text-left" ys-on:click="toggle()">'
+            . $inner
+            . '<span class="shrink-0 text-slate-400 transition-transform" ys-class="{ \'rotate-180\': open }">&#9662;</span>'
+            . '</button>';
     }
 
     /**
@@ -1702,62 +1937,114 @@ abstract class Resource extends Component
      * (e.g. a "Download" link instead of "View", or an extra custom action) —
      * this is the full markup for the cell, not a list that gets merged.
      */
-    protected function rowActions(string $key, array $record): string
+    /**
+     * @return Action[]
+     */
+    protected function rowActions(array $record): array
     {
-        $escape = fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
-        $buttonClass = 'h-10 rounded-lg border border-slate-200 bg-white px-3 font-bold text-slate-600 hover:border-azure-200 hover:bg-azure-50 hover:text-azure-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-azure-500/40 dark:hover:bg-azure-500/10 dark:hover:text-azure-300';
-        $html = '';
-
         // Trashed records get their own action set - editing/viewing a
         // soft-deleted row in place doesn't make sense; restore it first.
         if ($this->softDeletes && $this->showTrash) {
-            if ($this->can('update', $record)) {
-                $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="restoreOne(\'' . $escape($key) . '\')">Restore</button> ';
-            }
-
-            if ($this->can('delete', $record)) {
-                $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="Permanently delete this record? This cannot be undone." ylc:click="forceDeleteOne(\'' . $escape($key) . '\')">Delete permanently</button>';
-            }
-
-            return $html;
+            return [
+                Action::make('restore')->label('Restore')->can('update')->action('restoreOne'),
+                Action::make('forceDelete')->label('Delete permanently')->can('delete')
+                    ->confirm('Permanently delete this record? This cannot be undone.')->action('forceDeleteOne'),
+            ];
         }
 
-        if ($this->can('view', $record)) {
-            $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openView(\'' . $escape($key) . '\')">View</button> ';
-        }
-
-        if ($this->isCreatable() && $this->can('update', $record)) {
-            $html .= '<button class="' . $buttonClass . '" type="button" ylc:click="openEdit(\'' . $escape($key) . '\')">Edit</button> ';
-        }
-
-        if ($this->can('delete', $record)) {
-            $confirm = $this->softDeletes ? 'Move this record to trash?' : 'Delete this record? This cannot be undone.';
-            $html .= '<button class="' . $buttonClass . '" type="button" ys-confirm="' . $escape($confirm) . '" ylc:click="deleteOne(\'' . $escape($key) . '\')">Delete</button>';
-        }
-
-        return $html;
+        return [
+            Action::make('view')->label('View')->can('view')->action('openView'),
+            Action::make('edit')->label('Edit')->can('update')
+                ->visible(fn () => $this->isCreatable())->action('openEdit'),
+            Action::make('delete')->label('Delete')->color('danger')->can('delete')
+                ->confirm($this->softDeletes ? 'Move this record to trash?' : 'Delete this record? This cannot be undone.')
+                ->action('deleteOne'),
+        ];
     }
 
     /**
      * Renders the bulk-selection toolbar actions (next to the "N selected" label).
      * Override to add custom bulk actions alongside or instead of bulk delete.
+     *
+     * @return Action[]
      */
-    protected function bulkActions(int $count): string
+    protected function bulkActions(): array
     {
-        if (!$this->can('deleteAny')) {
-            return '';
-        }
-
         if ($this->softDeletes && $this->showTrash) {
-            return '<button type="button" class="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900" ylc:click="bulkRestore">Restore</button> '
-                . '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="Permanently delete ' . $count . ' selected record(s)? This cannot be undone." ylc:click="bulkForceDelete">Delete permanently</button>';
+            return [
+                Action::make('restore')->label('Restore')->can('update')->action('bulkRestore'),
+                Action::make('forceDelete')->label('Delete permanently')->color('danger')->can('delete')
+                    ->confirm('Permanently delete the selected record(s)? This cannot be undone.')->action('bulkForceDelete'),
+            ];
         }
 
-        $confirm = $this->softDeletes
-            ? 'Move ' . $count . ' selected record(s) to trash?'
-            : 'Delete ' . $count . ' selected record(s)? This cannot be undone.';
+        return [
+            Action::make('delete')->label('Delete')->color('danger')->can('deleteAny')
+                ->confirm(fn ($count) => ($this->softDeletes ? 'Move ' : 'Delete ') . $count
+                    . ' selected record(s)' . ($this->softDeletes ? ' to trash?' : '? This cannot be undone.'))
+                ->action('bulkDelete'),
+        ];
+    }
 
-        return '<button type="button" class="rounded-md border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-900" ys-confirm="' . htmlspecialchars($confirm, ENT_QUOTES, 'UTF-8') . '" ylc:click="bulkDelete">Delete</button>';
+    /**
+     * Extra buttons next to the built-in "+ New" header button (which stays
+     * hardcoded since it's tightly coupled to isCreatable()/openCreate) -
+     * e.g. an "Export" action. Empty by default.
+     *
+     * @return Action[]
+     */
+    protected function headerActions(): array
+    {
+        return [];
+    }
+
+    protected function renderRowActions(string $key, array $record): string
+    {
+        $html = '';
+
+        foreach ($this->rowActions($record) as $action) {
+            if (!$action->isVisible($record)) {
+                continue;
+            }
+
+            if ($action->getAbility() !== null && !$this->can($action->getAbility(), $record)) {
+                continue;
+            }
+
+            $html .= $action->render($key, $record, 'row') . ' ';
+        }
+
+        return trim($html);
+    }
+
+    protected function renderBulkActions(int $count): string
+    {
+        $html = '';
+
+        foreach ($this->bulkActions() as $action) {
+            if ($action->getAbility() !== null && !$this->can($action->getAbility(), [])) {
+                continue;
+            }
+
+            $html .= $action->render(null, [], 'compact', $count) . ' ';
+        }
+
+        return trim($html);
+    }
+
+    protected function renderHeaderActions(): string
+    {
+        $html = '';
+
+        foreach ($this->headerActions() as $action) {
+            if ($action->getAbility() !== null && !$this->can($action->getAbility(), [])) {
+                continue;
+            }
+
+            $html .= $action->withoutRecordKey()->render(null, [], 'row') . ' ';
+        }
+
+        return trim($html);
     }
 
     /**

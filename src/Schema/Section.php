@@ -19,6 +19,8 @@ class Section
     protected ?string $heading = null;
     protected ?string $description = null;
     protected int $columns = 1;
+    protected bool $collapsible = false;
+    protected bool $collapsed = false;
 
     /** @var Field[] */
     protected array $fields = [];
@@ -58,6 +60,27 @@ class Section
         return $this;
     }
 
+    /**
+     * Lets the section be toggled open/closed by clicking its heading - has
+     * no effect on a Section with no heading() set, since there'd be
+     * nothing to click. Purely client-side (see Resource::renderFormSection()),
+     * same as Tabs.
+     */
+    public function collapsible(bool $collapsible = true): static
+    {
+        $this->collapsible = $collapsible;
+
+        return $this;
+    }
+
+    /** Starts closed instead of open - only meaningful alongside collapsible(). */
+    public function collapsed(bool $collapsed = true): static
+    {
+        $this->collapsed = $collapsed;
+
+        return $this;
+    }
+
     public function getHeading(): ?string
     {
         return $this->heading;
@@ -71,6 +94,16 @@ class Section
     public function getColumns(): int
     {
         return $this->columns;
+    }
+
+    public function isCollapsible(): bool
+    {
+        return $this->collapsible;
+    }
+
+    public function isCollapsed(): bool
+    {
+        return $this->collapsed;
     }
 
     /** @return Field[] */
